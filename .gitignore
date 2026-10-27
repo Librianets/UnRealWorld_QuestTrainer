@@ -1,0 +1,10 @@
+*.exe
+*.zip
+*.obj
+*.pdb
+.build/
+test_game/
+URW_Trainer_backup/
+TRAINER_SELFTEST.json
+NATIVE_*.json
+NATIVE_*.tsv
