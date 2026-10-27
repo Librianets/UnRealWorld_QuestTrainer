@@ -2,7 +2,7 @@
 // Verified against the SHA-locked x86 3.89.1 executable. No memory writes.
 enum class NativeStage { Unknown, Main, Minus, LetterJ, Command, DebugText,
                          Npc, QuestQuestion, ItemName, ItemQuantity, Pickup,
-                         PickupCount, PickupCountText };
+                         PickupCount, PickupCountText, DayCount };
 struct NativeState { NativeStage stage=NativeStage::Unknown; uintptr_t debugFrame=0;uint32_t debugCall=0,readerCall=0,hookReturns=0;
                      std::vector<uint32_t> returns; };
 NativeState ProbeNative(){
@@ -80,6 +80,7 @@ NativeState ProbeNative(){
      case 0x56FEA2:out.stage=NativeStage::DebugText;break;
      case 0x57708A:out.stage=NativeStage::Npc;break;
      case 0x57B607:out.stage=NativeStage::ItemName;break;
+     case 0x57B569:out.stage=NativeStage::DayCount;break;
      default:if(QuestionActive())out.stage=NativeStage::QuestQuestion;break;
     }
    }

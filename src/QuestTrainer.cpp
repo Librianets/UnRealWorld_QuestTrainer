@@ -23,12 +23,13 @@ constexpr char kHash[]="c6ed73642c1b1cb1f86b818c7586224398c2f0554f6114ced31bc40f
 constexpr uintptr_t kPrompt=0x65A8CF8,kMenuCount=0x6354A34,kMenuKeys=0x634EFD8;
 constexpr uintptr_t kPlayer=0xA783C10,kCounter=0xA72B0CC,kQuest=0xA82D3B0;
 HWND g_window,g_log,g_games,g_choices,g_status,g_begin,g_native,g_refresh;
-HWND g_item,g_quantity,g_add,g_update;
+HWND g_item,g_quantity,g_add,g_update,g_days;
 HANDLE g_process=nullptr;HWND g_game=nullptr;DWORD g_pid=0,g_thread=0;uintptr_t g_base=0;
 HKL g_previousLayout=nullptr,g_english=nullptr;bool g_busy=false,g_hadFirst=false;
 int g_type=3,g_boot=0,g_index=0,g_phase=0;ULONGLONG g_due=0,g_deadline=0;uint32_t g_before=0;
 Plan g_plan;
-bool g_itemMode=false;std::string g_itemName;int g_itemCount=1;uint32_t g_itemId=0;
+bool g_daysMode=false;uint32_t g_daysBefore=0,g_dayDelta=0,g_minutesBefore=0;
+bool g_itemMode=false;std::string g_itemName;std::wstring g_itemLabel;int g_itemCount=1;uint32_t g_itemId=0;
 ULONGLONG g_stepDeadline=0;std::string g_typed;size_t g_typedIndex=0;
 struct Game {DWORD pid;HWND hwnd;std::wstring path;};std::vector<Game> g_available;
 std::wstring Wide(const std::string& s){if(s.empty())return {};int n=MultiByteToWideChar(1252,0,s.data(),(int)s.size(),nullptr,0);std::wstring o(n,0);MultiByteToWideChar(1252,0,s.data(),(int)s.size(),o.data(),n);return o;}
@@ -51,7 +52,7 @@ std::string TextAt(uintptr_t va,size_t length){std::vector<char> data(length+1,0
 bool QuestionActive(){int count=(int)NumberAt(kMenuCount);if(count<3||count>32)return false;bool yes=false,no=false,esc=false;for(int i=0;i<count;++i){int key=(int)NumberAt(kMenuKeys+232*i);yes|=key==89;no|=key==78;esc|=key==27;}return yes&&no&&esc;}
 #include "HookState.h"
 void LayoutBack(){if(g_previousLayout&&IsWindow(g_game)&&GetKeyboardLayout(g_thread)==g_english){DWORD_PTR ignored=0;SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_previousLayout,SMTO_ABORTIFHUNG,500,&ignored);}g_previousLayout=nullptr;}
-void Stop(const wchar_t* reason){g_busy=false;LayoutBack();EnableWindow(g_begin,TRUE);EnableWindow(g_native,TRUE);EnableWindow(g_refresh,TRUE);EnableWindow(g_games,TRUE);EnableWindow(g_add,TRUE);EnableWindow(g_item,TRUE);EnableWindow(g_quantity,TRUE);EnableWindow(g_update,TRUE);Status(reason);Log(reason);}
+void Stop(const wchar_t* reason){g_busy=false;LayoutBack();EnableWindow(g_begin,TRUE);EnableWindow(g_native,TRUE);EnableWindow(g_refresh,TRUE);EnableWindow(g_games,TRUE);EnableWindow(g_add,TRUE);EnableWindow(g_item,TRUE);EnableWindow(g_quantity,TRUE);EnableWindow(g_update,TRUE);EnableWindow(g_days,TRUE);Status(reason);Log(reason);}
 void Disconnect(){LayoutBack();if(g_process)CloseHandle(g_process);g_process=nullptr;g_game=nullptr;g_base=0;g_pid=0;}
 bool Attach(const Game& game){
  Disconnect();if(HashFile(game.path)!=kHash){Log(L"Неподдерживаемый EXE: требуется чистая UnReal World 3.89.1.");return false;}
@@ -91,7 +92,7 @@ void CheckUpdate(){
  auto at=path.find_last_of(L"\\/");if(at==std::wstring::npos)return;
  std::wstring script=path.substr(0,at+1)+L"URW_TrainerUpdater.ps1";
  if(GetFileAttributesW(script.c_str())==INVALID_FILE_ATTRIBUTES){Log(L"Не найден URW_TrainerUpdater.ps1. Распакуйте полный архив тренера.");return;}
- std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.05 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
+ std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.06 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
  if((INT_PTR)ShellExecuteW(g_window,L"open",L"powershell.exe",args.c_str(),path.substr(0,at).c_str(),SW_HIDE)<=32)Log(L"Не удалось запустить проверку обновлений.");
  else Log(L"Проверяю последнюю версию тренера на GitHub...");
 }
@@ -99,7 +100,7 @@ HWND Control(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int 
 LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
  switch(msg){case WM_CREATE:{g_window=hwnd;
   g_log=Control(L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,12,12,450,565,1);SendMessageW(g_log,EM_SETLIMITTEXT,1000000,0);
-  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.05",0,478,12,290,24,2);
+  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.06",0,478,12,290,24,2);
   Control(L"STATIC",L"1. Загрузите персонажа. Нужна локальная карта, рядом с NPC; диалоги закрыты.",0,478,42,285,46,3);
   g_games=Control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,478,94,285,200,10);
   g_refresh=Control(L"BUTTON",L"Найти игру",WS_TABSTOP,478,126,285,30,11);
@@ -110,17 +111,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
   g_native=Control(L"BUTTON",L"Открыть штатное меню вручную",WS_TABSTOP,478,276,285,30,14);
   Control(L"BUTTON",L"Остановить автоматику",WS_TABSTOP,478,316,285,30,15);
   Control(L"STATIC",L"3. Укажите NPC в игре. После создания поговорите с ним и примите задание. Условия игры и ограничения генератора сохраняются.",0,478,358,285,65,5);
-  Control(L"STATIC",L"Предмет в инвентарь (английское название):",0,478,432,285,22,16);
+  Control(L"STATIC",L"Предмет в инвентарь (русский / English):",0,478,432,285,22,16);
   g_item=Control(L"COMBOBOX",L"",CBS_DROPDOWN|WS_VSCROLL|WS_TABSTOP,478,457,285,300,17);
   Control(L"STATIC",L"Количество (1–100):",0,478,492,170,22,18);
   g_quantity=Control(L"EDIT",L"1",ES_NUMBER|WS_TABSTOP,662,489,100,24,19);
   g_add=Control(L"BUTTON",L"Добавить предмет",WS_TABSTOP,478,525,285,32,20);
   Control(L"BUTTON",L"Обновить предметы из игры",WS_TABSTOP,478,566,285,28,21);
-  g_update=Control(L"BUTTON",L"Проверить обновления тренера",WS_TABSTOP,478,608,285,30,22);
-  g_status=Control(L"STATIC",L"",0,12,651,750,48,6);SetTimer(hwnd,1,60,nullptr);
-  Log(L"Тренер 0.05. Штатный ввод с проверкой состояния игры.");Refresh();if(SelectGame())LoadItems();return 0;}
+  g_days=Control(L"BUTTON",L"Довести стаж до 100 дней",WS_TABSTOP,478,608,285,30,23);
+  g_update=Control(L"BUTTON",L"Проверить обновления тренера",WS_TABSTOP,478,650,285,30,22);
+  g_status=Control(L"STATIC",L"",0,12,694,750,48,6);SetTimer(hwnd,1,60,nullptr);
+  Log(L"Тренер 0.06. Штатный ввод с проверкой состояния игры.");Refresh();if(SelectGame())LoadItems();return 0;}
  case WM_TIMER:Tick();return 0;
- case WM_COMMAND:switch(LOWORD(w)){case 11:Refresh();if(SelectGame())LoadItems();break;case 13:Begin(false);break;case 14:Begin(true);break;case 20:Begin(false,true);break;case 21:if(!g_busy&&SelectGame())LoadItems();break;case 22:CheckUpdate();break;case 15:Stop(L"Автоматика остановлена. Завершите открытый диалог в игре вручную.");break;}return 0;
+ case WM_COMMAND:switch(LOWORD(w)){case 11:Refresh();if(SelectGame())LoadItems();break;case 13:Begin(false);break;case 14:Begin(true);break;case 20:Begin(false,true);break;case 21:if(!g_busy&&SelectGame())LoadItems();break;case 22:CheckUpdate();break;case 23:Begin(false,false,true);break;case 15:Stop(L"Автоматика остановлена. Завершите открытый диалог в игре вручную.");break;}return 0;
  case WM_DESTROY:KillTimer(hwnd,1);Disconnect();PostQuitMessage(0);return 0;
  }return DefWindowProcW(hwnd,msg,w,l);
 }
@@ -152,7 +154,13 @@ bool InputSelfTest(std::string& received){
  return okay&&received=="*-j\rdq\r";
 }
 int SelfTest(){int failed=0,checks=0;auto check=[&](bool v){++checks;if(!v)++failed;};
- check(MinimumQuestDays(15)==10);check(MinimumQuestDays(72)==0);check(MinimumQuestDays(70)==0);check(MinimumQuestDays(5)==2);check(MinimumQuestDays(51)==30);check(Choices().size()==16);check(!Supported(100));check(!Supported(-1));check(!Supported(0));check(Supported(3));check(Supported(5));
+ check(MinimumQuestDays(15)==10);check(MinimumQuestDays(72)==0);check(MinimumQuestDays(70)==0);check(MinimumQuestDays(5)==2);check(MinimumQuestDays(51)==30);check(!ItemRussian("Nettle leaves").empty());check(ItemRussian("Unknown mod prototype").empty());
+ g_items={{302,"Arrow",L"Стрела | Arrow [#302]"},{303,"Arrow",L"Стрела | Arrow [#303]"},{1,"Nettle leaves",ItemLabel("Nettle leaves")}};
+ bool ambiguous=false;auto* chosen=ResolveItem(L"Arrow",303,ambiguous);check(chosen&&chosen->id==303);
+ chosen=ResolveItem(L"Arrow",0,ambiguous);check(!chosen&&ambiguous);
+ chosen=ResolveItem(Utf8Label(ItemRussian("Nettle leaves")),0,ambiguous);check(chosen&&chosen->id==1&&!ambiguous);
+ g_items.clear();
+ check(Choices().size()==16);check(!Supported(100));check(!Supported(-1));check(!Supported(0));check(Supported(3));check(Supported(5));
  for(int id:Choices()){bool selected=false;for(const auto& q:Questions()){check(q.source!=nullptr);check(Matches(std::string("?")+q.source,q.source));check(!Matches("?A different question",q.source));if(q.type==id){selected=true;break;}}check(selected);}
  for(int id:Choices()){
   Plan plan;check(plan.Reset(id));check(plan.Next(false,"?Homeland escort")==Answer::Wait);check(plan.index==0);
@@ -183,6 +191,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR command,int show){
   Disconnect();return 0;
  }
  WNDCLASSW c{};c.lpfnWndProc=WindowProc;c.hInstance=instance;c.lpszClassName=kClass;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
- HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.05",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,750,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
+ HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.06",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,800,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
  MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return 0;
 }
