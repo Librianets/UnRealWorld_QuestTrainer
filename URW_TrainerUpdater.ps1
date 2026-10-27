@@ -1,4 +1,4 @@
-﻿param([string]$CurrentVersion='0.04',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
+﻿param([string]$CurrentVersion='0.05',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
 $ErrorActionPreference='Stop'
 $script:TrainerRepository='Librianets/UnRealWorld_QuestTrainer'
 $script:AllowedFiles=@('URW_QuestTrainer.exe','URW_TrainerUpdater.ps1','README.txt','CODE_LICENSE.txt','build.cmd','src/QuestTrainer.cpp','src/QuestPlan.h','src/NativeState.h','src/TrainerFlow.h','src/HookState.h')
@@ -66,21 +66,18 @@ try{
  $mutex=New-Object Threading.Mutex($false,('Local\URW_Trainer_Update_'+$id));$locked=$mutex.WaitOne(0)
  if(-not $locked){throw 'An update is already running.'}
  $headers=@{'User-Agent'='URW-QuestTrainer-Updater';'Accept'='application/vnd.github+json'}
- $release=Invoke-RestMethod -Uri ('https://api.github.com/repos/'+$script:TrainerRepository+'/releases/latest') -Headers $headers -TimeoutSec 30
- $manifestAsset=@($release.assets|Where-Object {$_.name -ceq 'trainer-update.json'})
- if($manifestAsset.Count -ne 1){throw 'Release has no trainer update manifest.'}
- if($manifestAsset[0].browser_download_url -notlike ('https://github.com/'+$script:TrainerRepository+'/releases/download/*')){throw 'Unexpected manifest URL.'}
- $manifest=Invoke-RestMethod -Uri $manifestAsset[0].browser_download_url -Headers $headers -TimeoutSec 30
+ # Release-asset URLs work without the rate-limited REST API or an account.
+ $response=Invoke-WebRequest -UseBasicParsing -Uri ('https://github.com/'+$script:TrainerRepository+'/releases/latest/download/trainer-update.json') -Headers $headers -TimeoutSec 30
+ $json=if($response.Content -is [byte[]]){[Text.Encoding]::UTF8.GetString($response.Content)}else{[string]$response.Content}
+ $manifest=$json|ConvertFrom-Json
  Test-TrainerManifest $manifest
- if($release.tag_name -cne ('trainer-'+$manifest.version)){throw 'Release tag/version mismatch.'}
  if((Read-TrainerVersion $manifest.version) -le (Read-TrainerVersion $CurrentVersion)){Notice ('Установлена последняя версия тренера: '+$CurrentVersion);return}
  $answer=[Windows.Forms.MessageBox]::Show(('Доступен тренер '+$manifest.version+'. Скачать и установить? Тренер будет закрыт и запущен снова. Игра продолжит работать.'),'URW Quest Trainer',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Question)
  if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
- $asset=@($release.assets|Where-Object {$_.name -ceq $manifest.archive});if($asset.Count -ne 1){throw 'Update archive not found.'}
- if($asset[0].browser_download_url -notlike ('https://github.com/'+$script:TrainerRepository+'/releases/download/*')){throw 'Unexpected archive URL.'}
+ $archiveUrl='https://github.com/'+$script:TrainerRepository+'/releases/download/trainer-'+$manifest.version+'/'+$manifest.archive
  $stage=Join-Path ([IO.Path]::GetTempPath()) ('URWTrainer_'+[guid]::NewGuid().ToString('N'));$null=New-Item -ItemType Directory -Path $stage
  $archive=Join-Path $stage $manifest.archive
- Invoke-WebRequest -UseBasicParsing -Uri $asset[0].browser_download_url -OutFile $archive -Headers $headers -TimeoutSec 120
+ Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile $archive -Headers $headers -TimeoutSec 120
  Test-TrainerArchive $archive $manifest
  $expanded=Join-Path $stage 'files';[IO.Compression.ZipFile]::ExtractToDirectory($archive,$expanded)
  $parent=Get-Process -Id $TrainerPid -ErrorAction SilentlyContinue

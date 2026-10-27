@@ -91,7 +91,7 @@ void CheckUpdate(){
  auto at=path.find_last_of(L"\\/");if(at==std::wstring::npos)return;
  std::wstring script=path.substr(0,at+1)+L"URW_TrainerUpdater.ps1";
  if(GetFileAttributesW(script.c_str())==INVALID_FILE_ATTRIBUTES){Log(L"Не найден URW_TrainerUpdater.ps1. Распакуйте полный архив тренера.");return;}
- std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.04 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
+ std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.05 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
  if((INT_PTR)ShellExecuteW(g_window,L"open",L"powershell.exe",args.c_str(),path.substr(0,at).c_str(),SW_HIDE)<=32)Log(L"Не удалось запустить проверку обновлений.");
  else Log(L"Проверяю последнюю версию тренера на GitHub...");
 }
@@ -99,7 +99,7 @@ HWND Control(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int 
 LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
  switch(msg){case WM_CREATE:{g_window=hwnd;
   g_log=Control(L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,12,12,450,565,1);SendMessageW(g_log,EM_SETLIMITTEXT,1000000,0);
-  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.04",0,478,12,290,24,2);
+  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.05",0,478,12,290,24,2);
   Control(L"STATIC",L"1. Загрузите персонажа. Нужна локальная карта, рядом с NPC; диалоги закрыты.",0,478,42,285,46,3);
   g_games=Control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,478,94,285,200,10);
   g_refresh=Control(L"BUTTON",L"Найти игру",WS_TABSTOP,478,126,285,30,11);
@@ -118,7 +118,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
   Control(L"BUTTON",L"Обновить предметы из игры",WS_TABSTOP,478,566,285,28,21);
   g_update=Control(L"BUTTON",L"Проверить обновления тренера",WS_TABSTOP,478,608,285,30,22);
   g_status=Control(L"STATIC",L"",0,12,651,750,48,6);SetTimer(hwnd,1,60,nullptr);
-  Log(L"Тренер 0.04. Штатный ввод с проверкой состояния игры.");Refresh();if(SelectGame())LoadItems();return 0;}
+  Log(L"Тренер 0.05. Штатный ввод с проверкой состояния игры.");Refresh();if(SelectGame())LoadItems();return 0;}
  case WM_TIMER:Tick();return 0;
  case WM_COMMAND:switch(LOWORD(w)){case 11:Refresh();if(SelectGame())LoadItems();break;case 13:Begin(false);break;case 14:Begin(true);break;case 20:Begin(false,true);break;case 21:if(!g_busy&&SelectGame())LoadItems();break;case 22:CheckUpdate();break;case 15:Stop(L"Автоматика остановлена. Завершите открытый диалог в игре вручную.");break;}return 0;
  case WM_DESTROY:KillTimer(hwnd,1);Disconnect();PostQuitMessage(0);return 0;
@@ -183,6 +183,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR command,int show){
   Disconnect();return 0;
  }
  WNDCLASSW c{};c.lpfnWndProc=WindowProc;c.hInstance=instance;c.lpszClassName=kClass;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
- HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.04",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,750,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
+ HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.05",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,750,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
  MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return 0;
 }
