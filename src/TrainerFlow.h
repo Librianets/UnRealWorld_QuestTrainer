@@ -423,6 +423,225 @@ bool TypeChecked(const NativeState& state,NativeStage expected,const std::string
  else{++g_typedIndex;g_due=now+200;g_stepDeadline=now+6000;}
  return true;
 }
+// F5 course adapter: only reads task definitions/state and sends native keys.
+struct CourseEntry {int id;std::string title;};
+struct CourseData {std::wstring path;std::vector<CourseEntry> tasks;int current=-1,flag=-1,active=0;};
+CourseData g_courseData,g_courseJob;std::vector<int> g_courseQueue;size_t g_courseNext=0;int g_courseExpected=-1;
+bool SelectGame();
+const wchar_t* CourseRussian(int id){
+ switch(id){
+ case 1:return L"Вода";case 2:return L"Осмотреться";case 3:return L"Подбор предметов";case 4:return L"Развести костёр";
+ case 5:return L"Работа с деревом";case 6:return L"Сделать своими руками";case 7:return L"Рыбалка";case 8:return L"Приготовление пищи";
+ case 9:return L"Укрытие в лесу";case 10:return L"Поиск дичи";case 11:return L"Заклинание";case 12:return L"Добыча на охоте";
+ case 13:return L"Обработка шкур";case 14:return L"Водоём";case 15:return L"Поселение";case 16:return L"Торговля";
+ case 17:return L"Строительство";case 18:return L"Земледелие";case 19:return L"Домашнее животное";case 20:return L"Спутник";
+ case 21:return L"Установка ловушки";case 22:return L"Проверка ловушки";case 24:return L"Ничейная земля";case 25:return L"Выслеживание";
+ case 26:return L"Улов";case 27:return L"Лосось и форель";case 28:return L"Пещера";case 29:return L"Стрельба из лука";
+ case 30:return L"Мир духов";case 31:return L"Великий муж леса";case 32:return L"Военное дело";case 33:return L"Крупные ловушки";
+ case 34:return L"Одежда";case 35:return L"Средства к существованию";case 36:return L"Оружие севера";case 37:return L"Соль с побережья";
+ case 38:return L"Дом";case 39:return L"Сауна";case 40:return L"Большой лось";case 41:return L"Погребение в болоте";
+ case 42:return L"Учиться на практике";case 43:return L"Меха каумо";case 44:return L"Чужеземные торговцы";case 45:return L"Добыча в ловушке";
+ case 46:return L"Урожай";case 47:return L"Остров";case 48:return L"Смена сезона";case 49:return L"Умилостивить лес";default:return nullptr;
+ }
+}
+bool CourseRead(CourseData& out,std::wstring& error){
+ out={};if(!g_process||TextAt(kPlayer,32).empty()){error=L"Сначала загрузите персонажа в игре.";return false;}
+ std::string save=TextAt(0xA783C90,256);if(save.empty()){error=L"Не найден каталог персонажа.";return false;}
+ auto game=std::find_if(g_available.begin(),g_available.end(),[](const Game& g){return g.pid==g_pid;});if(game==g_available.end())return false;
+ std::filesystem::path folder=Wide(save);if(folder.is_relative())folder=std::filesystem::path(game->path).parent_path()/folder;
+ out.path=(folder/L"taskdata.urw").lexically_normal().wstring();
+ HANDLE f=CreateFileW(out.path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+ if(f==INVALID_HANDLE_VALUE){error=L"У персонажа нет файла учебного курса taskdata.urw. Выберите курс в игре (F5).";return false;}
+ LARGE_INTEGER size{};bool okay=GetFileSizeEx(f,&size)&&size.QuadPart>0&&size.QuadPart<=128*0xA08&&size.QuadPart%0xA08==0;
+ std::vector<unsigned char> bytes(okay?static_cast<size_t>(size.QuadPart):0);DWORD n=0;
+ if(okay)okay=ReadFile(f,bytes.data(),(DWORD)bytes.size(),&n,nullptr)&&n==bytes.size();CloseHandle(f);
+ if(!okay){error=L"Неизвестная структура taskdata.urw: выполнение недоступно.";return false;}
+ for(size_t at=0;at<bytes.size();at+=0xA08){
+  int id=0;memcpy(&id,bytes.data()+at+0x388,4);const char* title=(const char*)bytes.data()+at+4;
+  size_t len=strnlen(title,100);if(!CourseRussian(id)||len<3||len>=100||std::any_of(out.tasks.begin(),out.tasks.end(),[&](const CourseEntry& v){return v.id==id;})){
+   error=L"Неизвестный или повторяющийся этап учебного курса.";return false;
+  }
+  out.tasks.push_back({id,std::string(title,len)});
+ }
+ uint32_t position=0,flag=0,active=0;
+ if(!Read(0xA72B8D8,&position,4)||!Read(0x5E97A8,&flag,4)||!Read(0xA72B8D4,&active,4)){error=L"Не удалось прочитать состояние курса.";return false;}
+ out.current=(int)position;out.flag=(int)flag;out.active=(int)active;
+ if(out.current< -1||out.current>(int)out.tasks.size()||out.flag< -1||out.flag>1){error=L"Неизвестное состояние курса; обновите список на основном экране.";return false;}
+ return true;
+}
+bool SameCourse(const CourseData& a,const CourseData& b){
+ if(a.path!=b.path||a.tasks.size()!=b.tasks.size())return false;
+ for(size_t i=0;i<a.tasks.size();++i)if(a.tasks[i].id!=b.tasks[i].id||a.tasks[i].title!=b.tasks[i].title)return false;return true;
+}
+void RefreshCourse(bool selectCurrent){
+ if(!g_courseWindow)return;CourseData data;std::wstring error;
+ if(!CourseRead(data,error)){g_courseFilling=true;ListView_DeleteAllItems(g_courseList);g_courseFilling=false;g_courseData={};SetWindowTextW(g_courseInfo,error.c_str());EnableWindow(g_courseRun,FALSE);return;}
+ if(ProbeNative().stage==NativeStage::CourseReward){data.current=(int)data.tasks.size();data.active=0;data.flag=1;}
+ bool same=SameCourse(data,g_courseData);std::vector<bool> checked(data.tasks.size(),false);
+ if(same)for(int i=0;i<(int)data.tasks.size();++i)checked[i]=ListView_GetCheckState(g_courseList,i)!=FALSE;
+ g_courseData=data;g_courseFilling=true;ListView_DeleteAllItems(g_courseList);
+ for(int i=0;i<(int)data.tasks.size();++i){
+  const auto& task=data.tasks[i];std::wstring label=std::to_wstring(i+1)+L". "+CourseRussian(task.id)+L" / "+Wide(task.title);
+  LVITEMW item{};item.mask=LVIF_TEXT;item.iItem=i;item.pszText=label.data();ListView_InsertItem(g_courseList,&item);
+  bool past=data.current>=0&&(i<data.current||(i==data.current&&data.flag==1));
+  const wchar_t* status=data.current<0?L"Не активен":past?L"Выполнено":i==data.current?L"Текущий":L"Впереди";
+  ListView_SetItemText(g_courseList,i,1,const_cast<wchar_t*>(status));
+  bool check=past||(same&&!selectCurrent?checked[i]:i==data.current);ListView_SetCheckState(g_courseList,i,check?TRUE:FALSE);
+ }
+ g_courseFilling=false;
+ bool active=data.current>=0&&data.current<(int)data.tasks.size();
+ std::wstring info=active?L"Выберите текущий этап или несколько подряд. Игра сама завершит их и выдаст награды.":L"Курс не активен или завершён. Выберите учебный курс в игре (F5).";
+ SetWindowTextW(g_courseInfo,info.c_str());EnableWindow(g_courseRun,active&&!g_busy);
+}
+bool CourseKey(WORD vk);
+void CourseStart(){
+ if(g_busy||!SelectGame())return;auto native=ProbeNative();
+ if(native.stage!=NativeStage::Main&&native.stage!=NativeStage::Course){Log(L"Для выполнения F5 откройте основной экран игры или экран учебного курса F5.");return;}
+ CourseData data;std::wstring error;if(!CourseRead(data,error)){Log(error);return;}
+ if(!SameCourse(data,g_courseData)||data.current!=g_courseData.current||data.flag!=g_courseData.flag){RefreshCourse(true);Log(L"Состояние курса изменилось. Список обновлён; проверьте отметки и повторите.");return;}
+ std::vector<bool> checked(data.tasks.size(),false);for(int i=0;i<(int)checked.size();++i)checked[i]=ListView_GetCheckState(g_courseList,i)!=FALSE;
+ std::vector<int> queue;if(!CourseSelection(data.current,(int)data.tasks.size(),checked,queue)){Log(L"Отметьте текущий этап или несколько подряд от него. Невыбранные этапы тренер не пропускает.");return;}
+ if(IsIconic(g_game))ShowWindow(g_game,SW_RESTORE);SetForegroundWindow(g_game);
+ if(GetForegroundWindow()!=g_game){Log(L"Не удалось переключиться на игру. Повторите.");return;}
+ g_previousLayout=GetKeyboardLayout(g_thread);g_english=LoadKeyboardLayoutW(L"00000409",0);DWORD_PTR ignored=0;
+ if(!g_english||!SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_english,SMTO_ABORTIFHUNG,500,&ignored)){LayoutBack();Log(L"Не удалось включить английскую раскладку.");return;}
+ g_courseJob=data;g_courseQueue=queue;g_courseNext=0;g_courseExpected=queue.front();g_courseBusy=true;g_busy=true;g_itemMode=g_daysMode=false;
+ auto now=GetTickCount64();g_deadline=now+60000*queue.size();g_typed.clear();g_typedIndex=0;Step(native.stage==NativeStage::Course?102:100,now,15000);
+ for(HWND h:{g_begin,g_native,g_refresh,g_games,g_add,g_item,g_quantity,g_update,g_days,g_courseButton,g_courseRun})EnableWindow(h,FALSE);
+ if(native.stage==NativeStage::Course&&!CourseKey(VK_ESCAPE))return;
+ Status(L"Выполняю учебные этапы F5. Сохраняйте фокус на игре.");Log(L"F5: выбрано этапов "+std::to_wstring(queue.size())+L"; выполнение штатной командой tsk.");
+}
+bool CourseKey(WORD vk){if(SendVirtual(vk))return true;Stop(L"Не удалось передать клавишу F5/Esc. Выполнение курса остановлено.");return false;}
+void CourseTick(const NativeState& state,ULONGLONG now){
+ // The native reward screen resets the course index to0 before asking for
+ // a bonus. Recognize its proven return frame before comparing the index.
+ if(state.stage==NativeStage::CourseReward&&(g_phase==120||g_phase==130)&&g_courseExpected+1==(int)g_courseJob.tasks.size()){
+  Log(L"F5: выполнено — "+Wide(g_courseJob.tasks[g_courseExpected].title));
+  Stop(L"Последний этап отмечен выполненным. Выберите награду курса в игре, затем обновите список.");return;
+ }
+ CourseData data;std::wstring error;if(!CourseRead(data,error)){Stop(error.c_str());return;}
+ if(!SameCourse(data,g_courseJob)){Stop(L"Персонаж или учебный курс изменился. Выполнение остановлено.");return;}
+ // Only the expected native transition may advance a job; no guessed keys.
+ if(g_phase!=140&&data.current!=g_courseExpected){Stop(L"Номер учебного этапа неожиданно изменился. Проверьте курс F5.");return;}
+ if(g_phase==100){
+  if(state.stage==NativeStage::Course){
+   if(data.flag==1){Step(130,now,15000);return;}
+   if(data.flag==0&&data.active==data.tasks[data.current].id&&CourseKey(VK_ESCAPE))Step(102,now,15000);
+   return;
+  }
+  if(state.stage!=NativeStage::Main)return;
+  if(data.flag<0||!data.active){if(CourseKey(VK_F5))Step(101,now,15000);return;}
+  if(data.active!=data.tasks[data.current].id){Stop(L"Активный этап отличается от списка F5. Обновите курс в игре.");return;}
+  if(data.flag==1){if(CourseKey(VK_F5))Step(130,now,15000);return;}
+  Log(L"F5: "+Wide(data.tasks[data.current].title));if(SendChecked(L'*'))Step(110,now);return;
+ }
+ if(g_phase==101){if(state.stage!=NativeStage::Course)return;if(data.flag!=0||data.active!=data.tasks[data.current].id){Stop(L"Игра не подготовила текущий этап F5.");return;}if(CourseKey(VK_ESCAPE))Step(102,now,15000);return;}
+ if(g_phase==102){if(state.stage==NativeStage::Main)Step(100,now);return;}
+ if(g_phase==110){if(state.stage==NativeStage::Minus&&SendChecked(L'-'))Step(111,now);return;}
+ if(g_phase==111){if(state.stage==NativeStage::LetterJ&&SendChecked(L'j'))Step(112,now);return;}
+ if(g_phase==112){if(state.stage==NativeStage::Command&&SendChecked(L'\r'))Step(113,now);return;}
+ if(g_phase==113){TypeChecked(state,NativeStage::DebugText,"tsk",120,now);return;}
+ if(g_phase==120){
+  if(data.flag!=1)return;
+  if(state.stage==NativeStage::Course){Step(130,now,15000);return;}
+  if(state.stage==NativeStage::Main&&CourseKey(VK_F5))Step(130,now,15000);return;
+ }
+ if(g_phase==130){
+  if(data.flag!=1){Stop(L"Игра не подтвердила выполнение этапа F5.");return;}
+  if(state.stage==NativeStage::Course){if(CourseKey(VK_ESCAPE))Step(140,now,15000);return;}
+  if(data.current+1==(int)data.tasks.size()&&now>g_stepDeadline-12000){Stop(L"Последний этап отмечен выполненным. Выберите награду курса в игре, затем обновите список.");return;}
+  return;
+ }
+ if(g_phase==140){
+  if(state.stage!=NativeStage::Main&&state.stage!=NativeStage::Course)return;
+  bool nextReady=data.flag==-1||(data.flag==0&&state.stage==NativeStage::Course&&data.current<(int)data.tasks.size()&&data.active==data.tasks[data.current].id);
+  if(data.current!=g_courseExpected+1||!nextReady){Stop(L"Переход к следующему этапу не подтверждён. Откройте F5 и проверьте курс.");return;}
+  Log(L"F5: выполнено — "+Wide(data.tasks[g_courseExpected].title));++g_courseNext;
+  if(g_courseNext>=g_courseQueue.size()){Stop(L"Выбранные учебные этапы выполнены. Откройте F5 для проверки или выберите следующие в тренере.");return;}
+  g_courseExpected=g_courseQueue[g_courseNext];Step(100,now,15000);return;
+ }
+}
+LRESULT CALLBACK CourseWindowProc(HWND window,UINT msg,WPARAM w,LPARAM l){
+ switch(msg){
+ case WM_CREATE:{
+  g_courseWindow=window;
+  auto ctl=[&](const wchar_t* cls,const wchar_t* label,DWORD style,int x,int y,int width,int height,int id){HWND h=CreateWindowExW(0,cls,label,WS_CHILD|WS_VISIBLE|style,x,y,width,height,window,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);SendMessageW(h,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);return h;};
+  g_courseInfo=ctl(L"STATIC",L"",0,12,12,740,42,100);
+  g_courseList=ctl(WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|WS_TABSTOP|WS_BORDER,12,62,740,506,101);
+  ListView_SetExtendedListViewStyle(g_courseList,LVS_EX_CHECKBOXES|LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER);
+  LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<wchar_t*>(L"Учебный этап");col.cx=580;ListView_InsertColumn(g_courseList,0,&col);
+  col.pszText=const_cast<wchar_t*>(L"Состояние");col.cx=135;ListView_InsertColumn(g_courseList,1,&col);
+  ctl(L"BUTTON",L"Обновить / текущий",WS_TABSTOP,12,582,165,32,102);
+  ctl(L"BUTTON",L"Выбрать оставшиеся",WS_TABSTOP,185,582,170,32,103);
+  g_courseRun=ctl(L"BUTTON",L"Выполнить отмеченные",WS_TABSTOP,363,582,195,32,104);
+  ctl(L"BUTTON",L"Остановить",WS_TABSTOP,566,582,186,32,105);
+  ctl(L"STATIC",L"Для тестового персонажа. Этапы и награды сохраняются самой игрой. F2 — отдельный журнал заданий.",0,12,624,740,38,106);
+  RefreshCourse(true);return 0;
+ }
+ case WM_NOTIFY:{
+  auto* note=(NMHDR*)l;
+  if(note->hwndFrom==g_courseList&&note->code==LVN_ITEMCHANGING&&!g_courseFilling){
+   auto* item=(NMLISTVIEW*)l;
+   if((item->uChanged&LVIF_STATE)&&((item->uOldState^item->uNewState)&LVIS_STATEIMAGEMASK)){
+    if(g_busy||item->iItem<g_courseData.current)return TRUE;
+   }
+  }break;
+ }
+ case WM_COMMAND:switch(LOWORD(w)){
+  case 102:if(!g_busy&&SelectGame())RefreshCourse(true);break;
+  case 103:if(!g_busy&&g_courseData.current>=0){for(int i=g_courseData.current;i<(int)g_courseData.tasks.size();++i)ListView_SetCheckState(g_courseList,i,TRUE);}break;
+  case 104:CourseStart();break;
+  case 105:Stop(L"Выполнение курса остановлено. Открытый экран в игре завершите вручную.");break;
+ }return 0;
+ case WM_CLOSE:if(g_courseBusy)Stop(L"Окно курса закрыто; дальнейший ввод остановлен.");DestroyWindow(window);return 0;
+ case WM_DESTROY:g_courseWindow=g_courseList=g_courseInfo=g_courseRun=nullptr;return 0;
+ }
+ return DefWindowProcW(window,msg,w,l);
+}
+void OpenCourseWindow(){
+ if(g_busy)return;if(g_courseWindow){ShowWindow(g_courseWindow,SW_RESTORE);SetForegroundWindow(g_courseWindow);return;}
+ if(!SelectGame())return;WNDCLASSW c{};c.lpfnWndProc=CourseWindowProc;c.hInstance=GetModuleHandleW(nullptr);c.lpszClassName=L"URWTrainerCourseWindow";c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
+ HWND window=CreateWindowExW(0,c.lpszClassName,L"Учебные задания F5 — тренер 0.07",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,780,710,g_window,nullptr,c.hInstance,nullptr);if(window)ShowWindow(window,SW_SHOW);
+}
+
+// Skill lock is an explicit tester action. Only this verified scalar is written,
+// while the game's main thread is suspended at the proven allocation reader.
+void StopSkillFreeze(const wchar_t* reason){
+ bool was=g_skillFrozen;g_skillFrozen=false;if(g_skillWriter){CloseHandle(g_skillWriter);g_skillWriter=nullptr;}
+ EnableWindow(g_skillLock,TRUE);EnableWindow(g_skillUnlock,FALSE);
+ if(!g_busy){EnableWindow(g_games,TRUE);EnableWindow(g_refresh,TRUE);}
+ if(reason){SetWindowTextW(g_skillInfo,reason);if(was)Log(reason);}
+ else if(was){SetWindowTextW(g_skillInfo,L"Очки разморожены. Игра расходует их обычным способом.");Log(L"Заморозка очков навыков отключена.");}
+}
+void StartSkillFreeze(){
+ if(g_busy||g_skillFrozen)return;if(!SelectGame())return;
+ if(!g_skillCounter){Log(L"Не подтверждён адрес счётчика навыков. Запись запрещена.");return;}
+ auto state=ProbeNative();
+ if(state.stage!=NativeStage::SkillAllocation||state.skillPoints<1||state.skillPoints>100){
+  const wchar_t* message=L"Откройте окно распределения повышений навыков с оставшимися очками. Обычный список навыков не подходит.";
+  SetWindowTextW(g_skillInfo,message);Log(message);return;
+ }
+ g_skillWriter=OpenProcess(PROCESS_VM_WRITE|PROCESS_VM_OPERATION,FALSE,g_pid);
+ if(!g_skillWriter){SetWindowTextW(g_skillInfo,L"Windows не разрешила запись счётчика.");Log(L"Не удалось открыть процесс для фиксации очков навыков.");return;}
+ g_skillTarget=state.skillPoints;g_skillFrozen=true;g_skillLastSeen=GetTickCount64();g_skillWrites=0;
+ EnableWindow(g_skillLock,FALSE);EnableWindow(g_skillUnlock,TRUE);EnableWindow(g_games,FALSE);EnableWindow(g_refresh,FALSE);
+ auto message=L"Закреплено повышений: "+std::to_wstring(g_skillTarget)+L". Когда закончите, нажмите «Разморозить».";
+ SetWindowTextW(g_skillInfo,message.c_str());Log(message);
+ if(IsIconic(g_game))ShowWindow(g_game,SW_RESTORE);SetForegroundWindow(g_game);
+}
+void TickSkillFreeze(){
+ if(!g_skillFrozen)return;
+ if(!g_process||!IsWindow(g_game)||WaitForSingleObject(g_process,0)!=WAIT_TIMEOUT){StopSkillFreeze(L"Игра закрыта; заморозка отключена.");return;}
+ auto state=ProbeNative(g_skillWriter,g_skillTarget);
+ if(state.stage==NativeStage::SkillAllocation){
+  g_skillLastSeen=GetTickCount64();
+  if(state.skillWriteAttempted){
+   if(!state.skillWriteOkay){StopSkillFreeze(L"Не удалось записать счётчик. Заморозка отключена.");return;}
+   ++g_skillWrites;
+  }
+ }else if(GetTickCount64()-g_skillLastSeen>2000)StopSkillFreeze(L"Окно распределения навыков закрыто; заморозка отключена.");
+}
+
 bool SelectGame(){
  int selected=(int)SendMessageW(g_games,CB_GETCURSEL,0,0);
  if(selected<0||selected>=(int)g_available.size()){Refresh();return false;}
@@ -430,6 +649,7 @@ bool SelectGame(){
 }
 void Begin(bool native,bool item=false,bool days=false){
  if(g_busy||!SelectGame())return;
+ g_courseBusy=false;
  if(TextAt(kPlayer,32).empty()){Log(L"Сначала загрузите живого персонажа.");return;}
  auto state=ProbeNative();
  if(state.stage!=NativeStage::Main){Log(L"Нужен основной игровой экран. Закройте меню/диалоги и повторите. Ввод не отправлен.");return;}
@@ -473,6 +693,7 @@ void Tick(){
  if(GetForegroundWindow()!=g_game){Stop(L"Остановлено: окно игры потеряло фокус. Открытый диалог завершите вручную.");return;}
  if(now>g_deadline||now>g_stepDeadline){Log(L"Ожидался этап "+std::to_wstring(g_phase)+L". Возврат на основной экран может потребовать Esc, если остался выбор цели.");Stop(L"Ожидаемое состояние игры не подтверждено. Ввод остановлен; новое задание/выдача не подтверждены.");return;}
  auto state=ProbeNative();
+ if(g_courseBusy){CourseTick(state,now);return;}
  static int phase=-1,stage=-1;static uint32_t call=0;
  if(phase!=g_phase||stage!=(int)state.stage||call!=state.debugCall){
   phase=g_phase;stage=(int)state.stage;call=state.debugCall;

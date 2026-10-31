@@ -6,6 +6,8 @@
 #include <tlhelp32.h>
 #include <bcrypt.h>
 #include <shellapi.h>
+#include <commctrl.h>
+#include <filesystem>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -16,6 +18,7 @@
 #include <vector>
 #include "QuestPlan.h"
 #pragma comment(lib,"bcrypt.lib")
+#pragma comment(lib,"comctl32.lib")
 using namespace qtrainer;
 namespace {
 constexpr wchar_t kClass[]=L"URWQuestTrainerWindow";
@@ -24,6 +27,13 @@ constexpr uintptr_t kPrompt=0x65A8CF8,kMenuCount=0x6354A34,kMenuKeys=0x634EFD8;
 constexpr uintptr_t kPlayer=0xA783C10,kCounter=0xA72B0CC,kQuest=0xA82D3B0;
 HWND g_window,g_log,g_games,g_choices,g_status,g_begin,g_native,g_refresh;
 HWND g_item,g_quantity,g_add,g_update,g_days;
+HWND g_skillLock=nullptr,g_skillUnlock=nullptr,g_skillInfo=nullptr;
+HANDLE g_skillWriter=nullptr;uintptr_t g_skillCounter=0;bool g_skillFrozen=false;
+int g_skillTarget=0;ULONGLONG g_skillLastSeen=0;unsigned g_skillWrites=0;
+void StopSkillFreeze(const wchar_t* reason=nullptr);
+HWND g_courseButton,g_courseWindow=nullptr,g_courseList=nullptr,g_courseInfo=nullptr,g_courseRun=nullptr;
+bool g_courseBusy=false,g_courseFilling=false;
+void RefreshCourse(bool selectCurrent=false);
 HANDLE g_process=nullptr;HWND g_game=nullptr;DWORD g_pid=0,g_thread=0;uintptr_t g_base=0;
 HKL g_previousLayout=nullptr,g_english=nullptr;bool g_busy=false,g_hadFirst=false;
 int g_type=3,g_boot=0,g_index=0,g_phase=0;ULONGLONG g_due=0,g_deadline=0;uint32_t g_before=0;
@@ -49,11 +59,23 @@ std::string HashFile(const std::wstring& path){
 bool Read(uintptr_t va,void* out,size_t size){SIZE_T used=0;return g_process&&g_base&&ReadProcessMemory(g_process,(void*)(g_base+va-0x400000),out,size,&used)&&used==size;}
 uint32_t NumberAt(uintptr_t va){uint32_t v=0;Read(va,&v,sizeof(v));return v;}
 std::string TextAt(uintptr_t va,size_t length){std::vector<char> data(length+1,0);if(!Read(va,data.data(),length))return {};return std::string(data.data());}
+// Recover the native scalar from matching print/decrement/increment/setup
+// operands.3.89.1 moved this data compared with the3.89 IDA export.
+bool ResolveSkillCounter(){
+ unsigned char show[6]{},dec[6]{},inc[6]{},init[6]{};
+ if(!Read(0x411D5A,show,6)||!Read(0x41202D,dec,6)||!Read(0x4120D1,inc,6)||!Read(0x41216F,init,6))return false;
+ if(show[0]!=0xFF||show[1]!=0x35||dec[0]!=0xFF||dec[1]!=0x0D||inc[0]!=0xFF||inc[1]!=0x05||init[0]!=0x89||init[1]!=0x15)return false;
+ uint32_t ptr=0;memcpy(&ptr,show+2,4);
+ if(memcmp(show+2,dec+2,4)||memcmp(show+2,inc+2,4)||memcmp(show+2,init+2,4)||ptr<g_base||ptr+4>g_base+0x200000)return false;
+ MEMORY_BASIC_INFORMATION mi{};
+ if(!VirtualQueryEx(g_process,(void*)ptr,&mi,sizeof(mi))||mi.State!=MEM_COMMIT||(mi.Protect&(PAGE_NOACCESS|PAGE_GUARD))||!(mi.Protect&(PAGE_READWRITE|PAGE_WRITECOPY)))return false;
+ g_skillCounter=ptr;return true;
+}
 bool QuestionActive(){int count=(int)NumberAt(kMenuCount);if(count<3||count>32)return false;bool yes=false,no=false,esc=false;for(int i=0;i<count;++i){int key=(int)NumberAt(kMenuKeys+232*i);yes|=key==89;no|=key==78;esc|=key==27;}return yes&&no&&esc;}
 #include "HookState.h"
 void LayoutBack(){if(g_previousLayout&&IsWindow(g_game)&&GetKeyboardLayout(g_thread)==g_english){DWORD_PTR ignored=0;SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_previousLayout,SMTO_ABORTIFHUNG,500,&ignored);}g_previousLayout=nullptr;}
-void Stop(const wchar_t* reason){g_busy=false;LayoutBack();EnableWindow(g_begin,TRUE);EnableWindow(g_native,TRUE);EnableWindow(g_refresh,TRUE);EnableWindow(g_games,TRUE);EnableWindow(g_add,TRUE);EnableWindow(g_item,TRUE);EnableWindow(g_quantity,TRUE);EnableWindow(g_update,TRUE);EnableWindow(g_days,TRUE);Status(reason);Log(reason);}
-void Disconnect(){LayoutBack();if(g_process)CloseHandle(g_process);g_process=nullptr;g_game=nullptr;g_base=0;g_pid=0;}
+void Stop(const wchar_t* reason){StopSkillFreeze();g_busy=false;g_courseBusy=false;LayoutBack();EnableWindow(g_begin,TRUE);EnableWindow(g_native,TRUE);EnableWindow(g_refresh,TRUE);EnableWindow(g_games,TRUE);EnableWindow(g_add,TRUE);EnableWindow(g_item,TRUE);EnableWindow(g_quantity,TRUE);EnableWindow(g_update,TRUE);EnableWindow(g_days,TRUE);EnableWindow(g_courseButton,TRUE);if(g_courseWindow){EnableWindow(g_courseRun,TRUE);RefreshCourse();}Status(reason);Log(reason);}
+void Disconnect(){StopSkillFreeze();g_skillCounter=0;LayoutBack();if(g_process)CloseHandle(g_process);g_process=nullptr;g_game=nullptr;g_base=0;g_pid=0;}
 bool Attach(const Game& game){
  Disconnect();if(HashFile(game.path)!=kHash){Log(L"Неподдерживаемый EXE: требуется чистая UnReal World 3.89.1.");return false;}
  g_process=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ|SYNCHRONIZE,FALSE,game.pid);if(!g_process){Log(L"Не удалось открыть процесс для чтения.");return false;}
@@ -61,6 +83,7 @@ bool Attach(const Game& game){
  if(snapshot!=INVALID_HANDLE_VALUE){if(Module32FirstW(snapshot,&m))g_base=(uintptr_t)m.modBaseAddr;CloseHandle(snapshot);}
  if(!g_base){Disconnect();Log(L"Не удалось определить базовый адрес EXE.");return false;}
  g_game=game.hwnd;g_pid=game.pid;g_thread=GetWindowThreadProcessId(g_game,nullptr);
+ ResolveSkillCounter();
  if(!LoadHookState()){Log(L"Не удалось проверить совместимость с загруженным хуком: "+Wide(g_hookState.error));return false;}return true;
 }
 BOOL CALLBACK FindWindow(HWND hwnd,LPARAM){
@@ -84,23 +107,28 @@ bool SendKey(wchar_t ch){
  if(shift)key(VK_SHIFT,false);key(vk,false);if(SendInput((UINT)events.size(),events.data(),sizeof(INPUT))!=events.size())return false;
  Sleep(45);events.clear();key(vk,true);if(shift)key(VK_SHIFT,true);return SendInput((UINT)events.size(),events.data(),sizeof(INPUT))==events.size();
 }
+bool SendVirtual(WORD vk){
+ if(!IsWindow(g_game)||GetForegroundWindow()!=g_game||GetAsyncKeyState(VK_CONTROL)<0||GetAsyncKeyState(VK_MENU)<0||GetAsyncKeyState(VK_SHIFT)<0)return false;
+ INPUT k{};k.type=INPUT_KEYBOARD;k.ki.wVk=vk;k.ki.wScan=(WORD)MapVirtualKeyW(vk,MAPVK_VK_TO_VSC);
+ if(SendInput(1,&k,sizeof(k))!=1)return false;Sleep(45);k.ki.dwFlags=KEYEVENTF_KEYUP;return SendInput(1,&k,sizeof(k))==1;
+}
 #include "NativeState.h"
 #include "TrainerFlow.h"
 void CheckUpdate(){
- if(g_busy){Log(L"Сначала остановите автоматику.");return;}
+ if(g_busy||g_skillFrozen){Log(L"Сначала остановите автоматику и разморозьте очки.");return;}
  wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,_countof(exe));std::wstring path=exe;
  auto at=path.find_last_of(L"\\/");if(at==std::wstring::npos)return;
  std::wstring script=path.substr(0,at+1)+L"URW_TrainerUpdater.ps1";
  if(GetFileAttributesW(script.c_str())==INVALID_FILE_ATTRIBUTES){Log(L"Не найден URW_TrainerUpdater.ps1. Распакуйте полный архив тренера.");return;}
- std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.06 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
+ std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.08 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
  if((INT_PTR)ShellExecuteW(g_window,L"open",L"powershell.exe",args.c_str(),path.substr(0,at).c_str(),SW_HIDE)<=32)Log(L"Не удалось запустить проверку обновлений.");
  else Log(L"Проверяю последнюю версию тренера на GitHub...");
 }
 HWND Control(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int w,int h,int id){HWND v=CreateWindowExW(!wcscmp(cls,L"EDIT")?WS_EX_CLIENTEDGE:0,cls,text,WS_CHILD|WS_VISIBLE|style,x,y,w,h,g_window,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);SendMessageW(v,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);return v;}
 LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
  switch(msg){case WM_CREATE:{g_window=hwnd;
-  g_log=Control(L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,12,12,450,565,1);SendMessageW(g_log,EM_SETLIMITTEXT,1000000,0);
-  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.06",0,478,12,290,24,2);
+  g_log=Control(L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,12,12,450,455,1);SendMessageW(g_log,EM_SETLIMITTEXT,1000000,0);
+  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.08",0,478,12,290,24,2);
   Control(L"STATIC",L"1. Загрузите персонажа. Нужна локальная карта, рядом с NPC; диалоги закрыты.",0,478,42,285,46,3);
   g_games=Control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,478,94,285,200,10);
   g_refresh=Control(L"BUTTON",L"Найти игру",WS_TABSTOP,478,126,285,30,11);
@@ -119,11 +147,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
   Control(L"BUTTON",L"Обновить предметы из игры",WS_TABSTOP,478,566,285,28,21);
   g_days=Control(L"BUTTON",L"Довести стаж до 100 дней",WS_TABSTOP,478,608,285,30,23);
   g_update=Control(L"BUTTON",L"Проверить обновления тренера",WS_TABSTOP,478,650,285,30,22);
-  g_status=Control(L"STATIC",L"",0,12,694,750,48,6);SetTimer(hwnd,1,60,nullptr);
-  Log(L"Тренер 0.06. Штатный ввод с проверкой состояния игры.");Refresh();if(SelectGame())LoadItems();return 0;}
- case WM_TIMER:Tick();return 0;
- case WM_COMMAND:switch(LOWORD(w)){case 11:Refresh();if(SelectGame())LoadItems();break;case 13:Begin(false);break;case 14:Begin(true);break;case 20:Begin(false,true);break;case 21:if(!g_busy&&SelectGame())LoadItems();break;case 22:CheckUpdate();break;case 23:Begin(false,false,true);break;case 15:Stop(L"Автоматика остановлена. Завершите открытый диалог в игре вручную.");break;}return 0;
- case WM_DESTROY:KillTimer(hwnd,1);Disconnect();PostQuitMessage(0);return 0;
+  Control(L"STATIC",L"Очки повышения навыков:",0,12,480,450,22,29);
+  g_skillLock=Control(L"BUTTON",L"Закрепить очки",WS_TABSTOP,12,508,215,32,26);
+  g_skillUnlock=Control(L"BUTTON",L"Разморозить",WS_TABSTOP,237,508,225,32,27);EnableWindow(g_skillUnlock,FALSE);
+  g_skillInfo=Control(L"STATIC",L"Откройте распределение навыков в игре. После разблокировки потратьте оставшиеся очки.",0,12,550,450,44,28);
+  g_courseButton=Control(L"BUTTON",L"Учебные задания F5...",WS_TABSTOP,12,608,450,34,24);
+  Control(L"STATIC",L"Отдельный список этапов курса с отметками выполнения.",0,12,650,450,30,25);
+  g_status=Control(L"STATIC",L"",0,12,694,750,48,6);SetTimer(hwnd,1,60,nullptr);SetTimer(hwnd,2,30,nullptr);
+  Log(L"Тренер 0.08. Штатный ввод; фиксация очков включается отдельно.");Refresh();if(SelectGame())LoadItems();return 0;}
+ case WM_TIMER:if(w==2)TickSkillFreeze();else Tick();return 0;
+ case WM_COMMAND:switch(LOWORD(w)){case 11:Refresh();if(SelectGame())LoadItems();break;case 13:Begin(false);break;case 14:Begin(true);break;case 20:Begin(false,true);break;case 21:if(!g_busy&&SelectGame())LoadItems();break;case 22:CheckUpdate();break;case 23:Begin(false,false,true);break;case 24:OpenCourseWindow();break;case 26:StartSkillFreeze();break;case 27:StopSkillFreeze(L"Очки разморожены. Распределите оставшиеся повышения в игре.");break;case 15:Stop(L"Автоматика остановлена. Завершите открытый диалог в игре вручную.");break;}return 0;
+ case WM_DESTROY:KillTimer(hwnd,1);KillTimer(hwnd,2);if(g_courseWindow)DestroyWindow(g_courseWindow);Disconnect();PostQuitMessage(0);return 0;
  }return DefWindowProcW(hwnd,msg,w,l);
 }
 bool InputSelfTest(std::string& received){
@@ -150,10 +184,15 @@ bool InputSelfTest(std::string& received){
   }
   if(received.size()==before){okay=false;break;}Sleep(120);
  }
+ for(WORD vk:{WORD(VK_F5),WORD(VK_ESCAPE)}){
+  bool seen=false;if(!SendVirtual(vk)){okay=false;break;}auto until=GetTickCount64()+1000;
+  while(GetTickCount64()<until&&!seen){alignas(8) unsigned char event[64]{};while(poll(event)){unsigned type=0;int sym=0;memcpy(&type,event,4);memcpy(&sym,event+20,4);if(type==0x300&&sym==(vk==VK_F5?1073741886:27))seen=true;}if(!seen)Sleep(10);}
+  okay=okay&&seen;
+ }
  LayoutBack();destroy(window);g_game=nullptr;quit();FreeLibrary(dll);if(IsWindow(old))SetForegroundWindow(old);
  return okay&&received=="*-j\rdq\r";
 }
-int SelfTest(){int failed=0,checks=0;auto check=[&](bool v){++checks;if(!v)++failed;};
+int SelfTest(bool native=true){int failed=0,checks=0;auto check=[&](bool v){++checks;if(!v)++failed;};
  check(MinimumQuestDays(15)==10);check(MinimumQuestDays(72)==0);check(MinimumQuestDays(70)==0);check(MinimumQuestDays(5)==2);check(MinimumQuestDays(51)==30);check(!ItemRussian("Nettle leaves").empty());check(ItemRussian("Unknown mod prototype").empty());
  g_items={{302,"Arrow",L"Стрела | Arrow [#302]"},{303,"Arrow",L"Стрела | Arrow [#303]"},{1,"Nettle leaves",ItemLabel("Nettle leaves")}};
  bool ambiguous=false;auto* chosen=ResolveItem(L"Arrow",303,ambiguous);check(chosen&&chosen->id==303);
@@ -172,25 +211,38 @@ int SelfTest(){int failed=0,checks=0;auto check=[&](bool v){++checks;if(!v)++fai
   }
   check(yes);check(plan.Next(true,"?Homeland escort")==Answer::Finished);
  }
+ std::vector<int> cq;
+ check(CourseSelection(1,4,{true,true,false,false},cq)&&cq==std::vector<int>{1});
+ check(CourseSelection(1,4,{false,true,true,false},cq)&&cq==std::vector<int>({1,2}));
+ check(!CourseSelection(1,4,{false,false,true,false},cq)&&cq.empty());
+ check(!CourseSelection(1,4,{false,true,false,true},cq)&&cq.empty());
+ check(!CourseSelection(-1,4,{true,true,true,true},cq));
+ check(!CourseSelection(4,4,{true,true,true,true},cq));
+ check(!CourseSelection(0,4,{true},cq));check(!CourseSelection(0,4,{false,false,false,false},cq));
+ check(CourseSelection(3,4,{false,false,false,true},cq)&&cq==std::vector<int>{3});
+ for(int id=1;id<=49;++id)check((CourseRussian(id)!=nullptr)==(id!=23));
  Plan invalid;check(!invalid.Reset(100));check(invalid.Next(true,"?Treasuretale?")==Answer::Wait);
  check(!Matches("?Fetch Herbs from an unrelated dialogue","Fetch Herbs"));
  check(std::wstring(L"*-j\rdq\r").size()==7);check(HashFile(L"a-file-that-does-not-exist").empty());
- std::string received;bool input=InputSelfTest(received);check(input);
- std::ofstream out("TRAINER_SELFTEST.json");out<<"{\"checks\":"<<checks<<",\"failures\":"<<failed<<",\"native_sdl_input\":"<<(input?"true":"false")<<",\"input_hex\":\"";
+ std::string received;bool input=false;if(native){input=InputSelfTest(received);check(input);}
+ std::ofstream out("TRAINER_SELFTEST.json");out<<"{\"checks\":"<<checks<<",\"failures\":"<<failed<<",\"native_sdl_input\":"<<(native?(input?"true":"false"):"null")<<",\"input_hex\":\"";
  for(unsigned char c:received)out<<std::hex<<std::setw(2)<<std::setfill('0')<<(int)c;out<<"\"}\n";return failed?1:0;
 }
 }
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR command,int show){
- if(!wcscmp(command,L"/selftest"))return SelfTest();
- if(!wcscmp(command,L"/probe")){
+ INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES};InitCommonControlsEx(&controls);
+ std::wstring args=command;auto end=args.find_last_not_of(L" \t\r\n");args=end==std::wstring::npos?L"":args.substr(0,end+1);
+ if(args==L"/selftest")return SelfTest();
+ if(args==L"/selftest-core")return SelfTest(false);
+ if(args==L"/probe"){
   EnumWindows(FindWindow,0);if(g_available.empty()||!Attach(g_available.front()))return 2;
   auto state=ProbeNative();std::ofstream out("NATIVE_STATE.json");
-  out<<"{\"hook_module\":"<<g_hookState.module<<",\"hook_tls\":"<<g_hookState.tlsIndex<<",\"hook_returns\":"<<state.hookReturns<<",\"stage\":"<<(int)state.stage<<",\"debug_frame\":"<<state.debugFrame<<",\"reader_call\":"<<state.readerCall<<",\"debug_call\":"<<state.debugCall<<",\"returns\":[";
+  out<<"{\"skill_counter\":"<<g_skillCounter<<",\"skill_frame\":"<<state.skillFrame<<",\"skill_points\":"<<state.skillPoints<<",\"hook_module\":"<<g_hookState.module<<",\"hook_tls\":"<<g_hookState.tlsIndex<<",\"hook_returns\":"<<state.hookReturns<<",\"stage\":"<<(int)state.stage<<",\"debug_frame\":"<<state.debugFrame<<",\"reader_call\":"<<state.readerCall<<",\"debug_call\":"<<state.debugCall<<",\"returns\":[";
   bool first=true;for(auto va:state.returns){if(!first)out<<',';out<<va;first=false;}out<<"],\"player\":\""<<TextAt(kPlayer,32)<<"\",\"time\":"<<NumberAt(0xA72B8E0)<<"}\n";
   LoadItems();std::ofstream items("NATIVE_ITEMS.tsv");for(const auto& item:g_items)items<<item.id<<'\t'<<item.name<<'\n';
   Disconnect();return 0;
  }
  WNDCLASSW c{};c.lpfnWndProc=WindowProc;c.hInstance=instance;c.lpszClassName=kClass;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
- HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.06",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,800,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
+ HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.08",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,800,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
  MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return 0;
 }

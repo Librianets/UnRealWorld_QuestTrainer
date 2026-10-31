@@ -15,7 +15,15 @@ bool LoadHookState(){
    std::string hash=HashFile(m.szExePath);
    if(hash!="653033af7eff76357cf1ba6803c80b5bc467196cc998f9e6cefdaac6aa0948b3"&&
       hash!="e2c7e04a2a28c4ce9e243896d7fa0655837c0a8493cd5d8cdd3063f338ec16b7"&&
-      hash!="17b2e24e877a49971b936e311d3d95d840df8225c9c04af30c8230cccb42d052"){
+      hash!="17b2e24e877a49971b936e311d3d95d840df8225c9c04af30c8230cccb42d052"&&
+      hash!="5eb156d73d7b38f2f97b393630c26c5ef58164f5094c7189df9fe8d1cd1c14c3"&&
+      hash!="ee89585163cbf0c006deefc690d670ba6aba1093b03792099270b5fc3d521319"&&
+      hash!="507033b79b2c8dfffd699772c7ad858526dcf1fa579ff66843f890f1e3c7294d"&&
+      hash!="d038ef48f044a2474aa4027257d0585f5adb26841196f586bc79f184ff7e8ece"&&
+      hash!="e70dcecb0a0b892a349a77b721ceba7eecb292cb7607a5a7c0853a0c672501f5"&&
+      hash!="17eca3112040eb0677759f700a4f8b25b32896b3f21b9c2ab5e150546938bb0a"&&
+      hash!="a6958a184ff3682f62cdd43bf4f59df3e6a620af054a6a803430c4a8be920c62"&&
+      hash!="6f6fe297e152c096985242ddd8e5e6c2118721cb84e3982fd48fb798d0eefda7"){
     g_hookState.error="Unsupported loaded translation-hook build";break;
    }
    // Resolve the hook's private TLS index from a checked x86 instruction pair:
