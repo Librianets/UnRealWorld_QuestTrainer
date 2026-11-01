@@ -2,7 +2,7 @@
 
 A standalone Windows tool for translation researchers and testers of **UnReal World 3.89.1**. It creates native quest offers at a selected NPC and adds base items through the game’s own controls. Quest offers must then be accepted in a normal conversation before appearing in F2.
 
-This is a private tester repository. Sign in with an account that has access to download releases. The existing anonymous updater cannot access a private repository; update the trainer manually from Releases.
+The repository and releases are public. No GitHub account is required. See the [full Russian instructions](README_RU.md).
 
 **[Download the latest ZIP](https://github.com/Librianets/UnRealWorld_QuestTrainer/releases/latest)**. Extract all files into a separate folder and start `URW_QuestTrainer.exe`. Run the game, load a test character and return to the local map with menus closed. Follow the trainer instructions, wait for CHOOSE TARGET, then select an NPC. Keep the game focused while automation runs.
 
@@ -28,8 +28,8 @@ Click **Проверить обновления тренера** (Check trainer 
 
 ## Compatibility and behaviour
 
-Requires the clean 32-bit 3.89.1 game EXE, SHA256 `c6ed73642c1b1cb1f86b818c7586224398c2f0554f6114ced31bc40ff071806d`. English play works without a translation hook. Known hooks are checked separately; unknown binaries are refused. The tool sends foreground keyboard input and reads process state, briefly suspending the game thread to inspect its stack. It does not write process memory, modify the EXE, inject a DLL or directly edit saves. The game itself changes/saves the world. No trainer logs are written during normal use; diagnostic commands are opt-in.
+Requires the clean 32-bit 3.89.1 game EXE, SHA256 `c6ed73642c1b1cb1f86b818c7586224398c2f0554f6114ced31bc40ff071806d`. English play works without a translation hook. Known hooks are checked separately; unknown binaries are refused. The tool sends foreground keyboard input and reads process state, briefly suspending the game thread to inspect its stack. The optional skill-point freeze writes only the validated four-byte counter in the running game. Other features inspect state and use native keyboard controls. The trainer does not modify the EXE, inject a DLL or directly edit saves. The game itself changes/saves the world. No trainer logs are written during normal use; diagnostic commands are opt-in.
 
 ## Build and licence
 
-Visual Studio 2022 C++ x86: run `build.cmd`. Source code is under 0BSD; no game files or translation DLLs are included. See [Russian instructions](README.txt) and [тренер_0.08.txt](тренер_0.08.txt). The trainer is separate from the [translation patch](https://github.com/Librianets/UnRealWorld_MultiTranslate/releases/latest).
+Visual Studio 2022 C++ x86: run `build.cmd`. Source code is under 0BSD; no game files or translation DLLs are included. See [Russian instructions](README.txt) and [тренер_0.08.txt](тренер_0.08.txt). The trainer is separate from the [translation patch](https://github.com/Librianets/UnRealWorld_Translation/releases/latest).
