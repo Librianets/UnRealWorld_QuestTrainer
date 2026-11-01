@@ -23,7 +23,11 @@ bool LoadHookState(){
       hash!="e70dcecb0a0b892a349a77b721ceba7eecb292cb7607a5a7c0853a0c672501f5"&&
       hash!="17eca3112040eb0677759f700a4f8b25b32896b3f21b9c2ab5e150546938bb0a"&&
       hash!="a6958a184ff3682f62cdd43bf4f59df3e6a620af054a6a803430c4a8be920c62"&&
-      hash!="6f6fe297e152c096985242ddd8e5e6c2118721cb84e3982fd48fb798d0eefda7"){
+      hash!="6f6fe297e152c096985242ddd8e5e6c2118721cb84e3982fd48fb798d0eefda7"&&
+      hash!="cde4e9ad9015aa4ad5862b4c6be6c155914746dbd2c6ad3624f37b8fb3a2442a"&&
+      hash!="db0e25263eac21fc0fce0a9c1da1a4aabe17d868482607fb63c9b7d49d9fe4ca"&&
+      hash!="1bc1f5899b9321b73ddb484e03b4e011d2dfe500d08d2b6c39c8b3c2fb3f1796"&&
+      hash!="cf6514ddeaf39ac3112147a731ca7244046fdbb401e4aa2c0001a786d7db058e"){
     g_hookState.error="Unsupported loaded translation-hook build";break;
    }
    // Resolve the hook's private TLS index from a checked x86 instruction pair:

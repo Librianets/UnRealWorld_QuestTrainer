@@ -1,5 +1,7 @@
 # UnReal World Quest Trainer
 
+Version **0.11** for **UnReal World 3.89.1**.
+
 A standalone Windows tool for translation researchers and testers of **UnReal World 3.89.1**. It creates native quest offers at a selected NPC and adds base items through the game’s own controls. Quest offers must then be accepted in a normal conversation before appearing in F2.
 
 The repository and releases are public. No GitHub account is required. See the [full Russian instructions](README_RU.md).
@@ -10,11 +12,17 @@ Use a test character: the game persists generated items and quests. Native requi
 
 ## Learning tasks (F5)
 
-Open **Учебные задания F5...** for a separate checklist of your character’s current course. Select the current task or several consecutive tasks and click **Выполнить отмеченные**. The trainer uses the native `tsk` command, checks completion and advances through F5. Unselected prerequisites are never skipped. Choose the final course reward yourself in the game. Both native 24-task courses are supported. Hook 0.29/0.30/0.31 Autor and Plus builds are supported.
+Open **Учебные задания F5...** for a separate checklist of your character’s current course. Select the current task or several consecutive tasks and click **Выполнить отмеченные**. The trainer uses the native `tsk` command, checks completion and advances through F5. Unselected prerequisites are never skipped. Choose the final course reward yourself in the game. Both native 24-task courses are supported. Hook 0.29/0.30/0.31/0.32/0.33 Autor and Plus builds are supported.
 
 ## Skill-improvement points
 
 Open the actual skill-allocation screen, then click **Закрепить очки**. The current remaining count is restored after native improvements, while each skill keeps its original maximum. Click **Разморозить** and spend the remaining points to continue normally. This opt-in feature writes only the validated four-byte live counter while the native input frame is proven and suspended; it does not patch EXE instructions or save files. Tested in the game and confirmed by the user.
+
+## Item browser
+
+Click **Добавление предметов...** for a separate window. Filter by native item type, search in Russian or English (case-insensitive), or search by ID. Click a column heading to sort. Select an item, set quantity 1–100 and click **Добавить в инвентарь**. Duplicate names retain their separate IDs.
+
+`fine club`, `club` and `дубина` find the base Club. Quality prefixes are search aliases: the game decides the actual generated quality. The browser does not force fine or other quality.
 
 ## Day and item tools
 

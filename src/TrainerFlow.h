@@ -1,5 +1,5 @@
 #pragma once
-struct ItemEntry {uint32_t id;std::string name;std::wstring label;};
+struct ItemEntry {uint32_t id;std::string name;std::wstring label;unsigned category=0;};
 std::vector<ItemEntry> g_items;
 int g_inventoryBefore=0;uint32_t g_groundBefore=0;int g_groundEntity=-1;int g_created=0;
 std::vector<uint16_t> g_groundCounts;
@@ -385,13 +385,13 @@ static const ItemEntry* ResolveItem(const std::wstring& text,uint32_t selected,b
 void LoadItems(){
  g_items.clear();SendMessageW(g_item,CB_RESETCONTENT,0,0);
  std::vector<unsigned char> bytes(400*172);
- if(!Read(0x58F9FF8,bytes.data(),bytes.size()))return;
+ if(!Read(0x58F9FF8,bytes.data(),bytes.size())){RefreshItemBrowser(true);Log(L"Не удалось прочитать список предметов из игры.");return;}
  for(uint32_t id=1;id<400;++id){
   auto at=bytes.data()+id*172;if(!at[0])continue;
   size_t n=0;while(n<80&&at[9+n])++n;if(!n||n>49)continue;
   std::string name((char*)at+9,n);bool valid=true;
   for(unsigned char c:name)if(c<32||c>126||c=='*')valid=false;
-  if(!valid)continue;g_items.push_back({id,name,{}});
+  if(!valid)continue;g_items.push_back({id,name,{},at[0]});
  }
  for(auto& item:g_items){item.label=ItemLabel(item.name);
   if(std::count_if(g_items.begin(),g_items.end(),[&](const ItemEntry& other){return Lower(item.name)==Lower(other.name);})>1)item.label+=L" [#"+std::to_wstring(item.id)+L"]";
@@ -400,8 +400,95 @@ void LoadItems(){
  for(const auto& item:g_items){auto pos=SendMessageW(g_item,CB_ADDSTRING,0,(LPARAM)item.label.c_str());SendMessageW(g_item,CB_SETITEMDATA,pos,item.id);}
  SendMessageW(g_item,CB_SETDROPPEDWIDTH,650,0);
  SetWindowTextW(g_item,ItemLabel("Nettle leaves").c_str());
+ RefreshItemBrowser(true);
  Log(L"Прочитано прототипов предметов: "+std::to_wstring(g_items.size()));
 }
+// Prototype byte0 is the category passed to the game's448AD0 category mapper.
+static std::wstring ItemCategory(unsigned type){switch(type){
+ case 1:return L"Оружие";case 2:return L"Одежда и доспехи";case 3:return L"Ёмкости";
+ case 5:return L"Шкуры и кожа";case 6:return L"Инструменты";case 7:return L"Еда";
+ case 8:return L"Древесина";case 9:return L"Транспорт";case 10:return L"Ценности";
+ case 11:return L"Растения";case 12:return L"Туши";case 13:return L"Разное";
+ case 14:return L"Ткани и пряжа";default:return L"Тип "+std::to_wstring(type);}}
+static std::wstring ItemLower(std::wstring text){if(!text.empty())CharLowerBuffW(text.data(),(DWORD)text.size());return text;}
+static std::wstring ItemSearchBase(std::wstring text){
+ text=ItemLower(text);auto first=text.find_first_not_of(L" \t");if(first==std::wstring::npos)return {};text.erase(0,first);text.erase(text.find_last_not_of(L" \t")+1);
+ // Qualities are generated variants, not separate base prototype IDs.
+ for(const wchar_t* q:{L"masterwork ",L"exceptional ",L"superior ",L"inferior ",L"perfect ",L"decent ",L"rough ",L"fine ",L"crude ",L"poor ",L"good ",L"добротная ",L"добротный ",L"добротное ",L"добротные ",L"плохой ",L"плохая ",L"плохое ",L"плохие ",L"грубый ",L"грубая ",L"грубое "}){
+  std::wstring prefix=q;if(text.compare(0,prefix.size(),prefix)==0&&text.size()>prefix.size()){text.erase(0,prefix.size());break;}}
+ return text;
+}
+static bool ItemSearchMatches(const ItemEntry& item,const std::wstring& query){
+ auto q=ItemSearchBase(query);if(q.empty())return true;
+ auto hay=ItemLower(Utf8Label(ItemRussian(item.name))+L" "+Wide(item.name)+L" "+std::to_wstring(item.id));
+ std::wistringstream tokens(q);std::wstring token;while(tokens>>token)if(hay.find(token)==std::wstring::npos)return false;return true;
+}
+static int CompareItems(const ItemEntry& a,const ItemEntry& b,int column){
+ if(column==3)return a.id<b.id?-1:a.id>b.id?1:0;
+ if(column==0&&a.category!=b.category)return a.category<b.category?-1:1;
+ auto x=column==2?Wide(a.name):Utf8Label(ItemRussian(a.name));auto y=column==2?Wide(b.name):Utf8Label(ItemRussian(b.name));
+ if(x.empty())x=Wide(a.name);if(y.empty())y=Wide(b.name);
+ int order=CompareStringOrdinal(x.c_str(),-1,y.c_str(),-1,TRUE);if(order==CSTR_EQUAL)return a.id<b.id?-1:a.id>b.id?1:0;return order==CSTR_LESS_THAN?-1:1;
+}
+static const ItemEntry* BrowserSelection(){if(!g_itemList)return nullptr;int row=ListView_GetNextItem(g_itemList,-1,LVNI_SELECTED);if(row<0)return nullptr;
+ LVITEMW v{};v.mask=LVIF_PARAM;v.iItem=row;if(!ListView_GetItem(g_itemList,&v))return nullptr;
+ for(const auto& item:g_items)if(item.id==(uint32_t)v.lParam)return &item;return nullptr;
+}
+static void ItemSelectionChanged(){if(g_itemFilling)return;auto* item=BrowserSelection();
+ EnableWindow(g_add,item&&!g_busy);if(!item)return;
+ int n=(int)SendMessageW(g_item,CB_GETCOUNT,0,0);for(int i=0;i<n;++i)if((uint32_t)SendMessageW(g_item,CB_GETITEMDATA,i,0)==item->id){SendMessageW(g_item,CB_SETCURSEL,i,0);break;}
+ std::wstring hint=item->label+L" — "+ItemCategory(item->category)+L"; ID "+std::to_wstring(item->id)+L". Качество назначает игра.";SetWindowTextW(g_itemInfo,hint.c_str());
+}
+void RefreshItemBrowser(bool types){if(!IsWindow(g_itemWindow))return;g_itemFilling=true;uint32_t selected=0;if(auto* old=BrowserSelection())selected=old->id;
+ int ix=(int)SendMessageW(g_itemType,CB_GETCURSEL,0,0);int filter=ix<0?-1:(int)SendMessageW(g_itemType,CB_GETITEMDATA,ix,0);
+ if(types){SendMessageW(g_itemType,CB_RESETCONTENT,0,0);auto pos=SendMessageW(g_itemType,CB_ADDSTRING,0,(LPARAM)L"Все типы");SendMessageW(g_itemType,CB_SETITEMDATA,pos,-1);SendMessageW(g_itemType,CB_SETCURSEL,pos,0);
+  std::vector<unsigned> cats;for(const auto& it:g_items)if(std::find(cats.begin(),cats.end(),it.category)==cats.end())cats.push_back(it.category);std::sort(cats.begin(),cats.end());
+  for(auto type:cats){auto title=ItemCategory(type);auto p=SendMessageW(g_itemType,CB_ADDSTRING,0,(LPARAM)title.c_str());SendMessageW(g_itemType,CB_SETITEMDATA,p,type);if(filter==(int)type)SendMessageW(g_itemType,CB_SETCURSEL,p,0);}
+  ix=(int)SendMessageW(g_itemType,CB_GETCURSEL,0,0);filter=(int)SendMessageW(g_itemType,CB_GETITEMDATA,ix,0);
+ }
+ wchar_t query[256]{};GetWindowTextW(g_itemSearch,query,256);std::vector<const ItemEntry*> visible;
+ for(const auto& item:g_items)if((filter<0||item.category==(unsigned)filter)&&ItemSearchMatches(item,query))visible.push_back(&item);
+ std::sort(visible.begin(),visible.end(),[](const ItemEntry* a,const ItemEntry* b){int cmp=CompareItems(*a,*b,g_itemSort);return g_itemDescending?cmp>0:cmp<0;});
+ SendMessageW(g_itemList,WM_SETREDRAW,FALSE,0);ListView_DeleteAllItems(g_itemList);int choose=-1;
+ for(auto* item:visible){std::wstring cat=ItemCategory(item->category),ru=Utf8Label(ItemRussian(item->name)),en=Wide(item->name),id=std::to_wstring(item->id);if(ru.empty())ru=L"—";
+  LVITEMW v{};v.mask=LVIF_TEXT|LVIF_PARAM;v.iItem=(int)ListView_GetItemCount(g_itemList);v.pszText=cat.data();v.lParam=item->id;int row=ListView_InsertItem(g_itemList,&v);
+  ListView_SetItemText(g_itemList,row,1,ru.data());ListView_SetItemText(g_itemList,row,2,en.data());ListView_SetItemText(g_itemList,row,3,id.data());if(selected==item->id)choose=row;
+ }
+ if(choose<0&&!visible.empty())choose=0;if(choose>=0)ListView_SetItemState(g_itemList,choose,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+ SendMessageW(g_itemList,WM_SETREDRAW,TRUE,0);InvalidateRect(g_itemList,nullptr,TRUE);g_itemFilling=false;
+ std::wstring info=L"Найдено: "+std::to_wstring(visible.size())+L" из "+std::to_wstring(g_items.size())+L". Выберите предмет. Качество назначает игра.";SetWindowTextW(g_itemInfo,info.c_str());ItemSelectionChanged();
+ if(g_busy)EnableWindow(g_add,FALSE);
+}
+bool SelectGame();
+void Begin(bool native,bool item,bool days);
+static LRESULT CALLBACK ItemWindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){
+ case WM_COMMAND:
+  if(LOWORD(w)==101&&HIWORD(w)==EN_CHANGE)RefreshItemBrowser();
+  if(LOWORD(w)==102&&HIWORD(w)==CBN_SELCHANGE)RefreshItemBrowser();
+  if(LOWORD(w)==20&&!g_busy){ItemSelectionChanged();if(BrowserSelection())Begin(false,true,false);}
+  if(LOWORD(w)==21&&!g_busy&&SelectGame())LoadItems();return 0;
+ case WM_NOTIFY:{auto* n=(NMHDR*)l;if(n->hwndFrom==g_itemList){if(n->code==LVN_ITEMCHANGED)ItemSelectionChanged();if(n->code==LVN_COLUMNCLICK){int col=((NMLISTVIEW*)l)->iSubItem;if(g_itemSort==col)g_itemDescending=!g_itemDescending;else{g_itemSort=col;g_itemDescending=false;}RefreshItemBrowser();}}return 0;}
+ case WM_CLOSE:if(g_busy){ShowWindow(hwnd,SW_HIDE);return 0;}DestroyWindow(hwnd);return 0;
+ case WM_DESTROY:g_itemWindow=g_itemSearch=g_itemType=g_itemList=g_itemInfo=g_item=g_quantity=g_add=nullptr;return 0;
+ }return DefWindowProcW(hwnd,msg,w,l);}
+void OpenItemWindow(){if(IsWindow(g_itemWindow)){ShowWindow(g_itemWindow,SW_SHOWNORMAL);SetForegroundWindow(g_itemWindow);return;}if(g_busy)return;
+ WNDCLASSW c{};c.lpfnWndProc=ItemWindowProc;c.hInstance=GetModuleHandleW(nullptr);c.lpszClassName=L"URWItemBrowser";c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
+ g_itemWindow=CreateWindowExW(0,c.lpszClassName,L"Предметы — русский / English",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,80,80,1040,710,g_window,nullptr,c.hInstance,nullptr);
+ auto add=[&](const wchar_t* cls,const wchar_t* title,DWORD style,int x,int y,int width,int height,int id){HWND h=CreateWindowExW(!wcscmp(cls,L"EDIT")?WS_EX_CLIENTEDGE:0,cls,title,WS_CHILD|WS_VISIBLE|style,x,y,width,height,g_itemWindow,(HMENU)(INT_PTR)id,c.hInstance,nullptr);SendMessageW(h,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);return h;};
+ add(L"STATIC",L"Поиск: русское / английское название или ID",0,12,12,450,20,100);
+ g_itemSearch=add(L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP,12,36,600,26,101);SendMessageW(g_itemSearch,EM_SETLIMITTEXT,250,0);
+ g_itemType=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,628,36,380,400,102);
+ g_itemList=add(WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP,12,78,996,450,103);ListView_SetExtendedListViewStyle(g_itemList,LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER|LVS_EX_GRIDLINES);
+ const wchar_t* titles[]={L"Тип ↑↓",L"Русское название ↑↓",L"English ↑↓",L"ID ↑↓"};int widths[]={190,360,360,65};for(int i=0;i<4;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=(wchar_t*)titles[i];col.cx=widths[i];ListView_InsertColumn(g_itemList,i,&col);}
+ g_itemInfo=add(L"STATIC",L"",0,12,540,995,42,104);
+ add(L"STATIC",L"Количество (1–100):",0,12,596,165,22,18);g_quantity=add(L"EDIT",L"1",ES_NUMBER|WS_TABSTOP,180,591,80,28,19);SendMessageW(g_quantity,EM_SETLIMITTEXT,3,0);
+ g_add=add(L"BUTTON",L"Добавить в инвентарь",WS_TABSTOP,280,588,320,34,20);add(L"BUTTON",L"Обновить список из игры",WS_TABSTOP,620,588,388,34,21);
+ add(L"STATIC",L"fine club → Club / дубина. В списке базовые предметы; качество при создании определяет игра.",0,12,635,996,25,105);
+ g_item=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST,0,0,1,1,17);ShowWindow(g_item,SW_HIDE);
+ if(!g_browserTest&&SelectGame())LoadItems();else RefreshItemBrowser(true);
+ ShowWindow(g_itemWindow,SW_SHOWNORMAL);SetForegroundWindow(g_itemWindow);SetFocus(g_itemSearch);
+}
+
 bool GroundCounts(std::vector<uint16_t>& counts){
  std::vector<unsigned char> data(9951*36);if(!Read(0xA6D28A8,data.data(),data.size()))return false;
  uint32_t x=NumberAt(0xA6D1C9C),y=NumberAt(0xA72BD40);counts.assign(9951,0);
@@ -507,7 +594,7 @@ void CourseStart(){
  if(!g_english||!SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_english,SMTO_ABORTIFHUNG,500,&ignored)){LayoutBack();Log(L"Не удалось включить английскую раскладку.");return;}
  g_courseJob=data;g_courseQueue=queue;g_courseNext=0;g_courseExpected=queue.front();g_courseBusy=true;g_busy=true;g_itemMode=g_daysMode=false;
  auto now=GetTickCount64();g_deadline=now+60000*queue.size();g_typed.clear();g_typedIndex=0;Step(native.stage==NativeStage::Course?102:100,now,15000);
- for(HWND h:{g_begin,g_native,g_refresh,g_games,g_add,g_item,g_quantity,g_update,g_days,g_courseButton,g_courseRun})EnableWindow(h,FALSE);
+ for(HWND h:{g_itemButton,g_begin,g_native,g_refresh,g_games,g_add,g_item,g_quantity,g_update,g_days,g_courseButton,g_courseRun})EnableWindow(h,FALSE);
  if(native.stage==NativeStage::Course&&!CourseKey(VK_ESCAPE))return;
  Status(L"Выполняю учебные этапы F5. Сохраняйте фокус на игре.");Log(L"F5: выбрано этапов "+std::to_wstring(queue.size())+L"; выполнение штатной командой tsk.");
 }
@@ -683,7 +770,7 @@ void Begin(bool native,bool item=false,bool days=false){
  if(!g_english||!SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_english,SMTO_ABORTIFHUNG,500,&ignored)){LayoutBack();Log(L"Не удалось включить английскую раскладку.");return;}
  g_type=native?0:type;g_plan.Reset(type);g_before=NumberAt(kCounter);g_phase=0;g_hadFirst=false;g_busy=true;
  auto now=GetTickCount64();g_due=now+500;g_stepDeadline=now+6000;g_deadline=now+(item?60000+5000*g_itemCount:180000);g_typed.clear();g_typedIndex=0;
- for(HWND h:{g_begin,g_native,g_refresh,g_games,g_add,g_item,g_quantity,g_update,g_days})EnableWindow(h,FALSE);
+ for(HWND h:{g_itemButton,g_begin,g_native,g_refresh,g_games,g_add,g_item,g_quantity,g_update,g_days})EnableWindow(h,FALSE);
  Status(days?L"Пропускаю дни штатной командой игры. Сохраняйте фокус.":item?L"Создаю предметы. Сохраняйте фокус на игре.":L"Открываю генератор. Дождитесь подтверждения выбора NPC.");
  Log(days?L"Переход с игрового дня "+std::to_wstring(g_daysBefore)+L" на день 100 (пропустить "+std::to_wstring(g_dayDelta)+L").":item?L"Добавление: "+g_itemLabel+L" × "+std::to_wstring(g_itemCount):L"Запрос типа "+std::to_wstring(g_type));
 }
