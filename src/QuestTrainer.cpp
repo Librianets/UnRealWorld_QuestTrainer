@@ -124,7 +124,7 @@ void CheckUpdate(){
  auto at=path.find_last_of(L"\\/");if(at==std::wstring::npos)return;
  std::wstring script=path.substr(0,at+1)+L"URW_TrainerUpdater.ps1";
  if(GetFileAttributesW(script.c_str())==INVALID_FILE_ATTRIBUTES){Log(L"Не найден URW_TrainerUpdater.ps1. Распакуйте полный архив тренера.");return;}
- std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.11 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
+ std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script+L"\" -CurrentVersion 0.14 -TrainerPath \""+path+L"\" -TrainerPid "+std::to_wstring(GetCurrentProcessId());
  if((INT_PTR)ShellExecuteW(g_window,L"open",L"powershell.exe",args.c_str(),path.substr(0,at).c_str(),SW_HIDE)<=32)Log(L"Не удалось запустить проверку обновлений.");
  else Log(L"Проверяю последнюю версию тренера на GitHub...");
 }
@@ -132,7 +132,7 @@ HWND Control(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int 
 LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
  switch(msg){case WM_CREATE:{g_window=hwnd;
   g_log=Control(L"EDIT",L"",ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,12,12,450,455,1);SendMessageW(g_log,EM_SETLIMITTEXT,1000000,0);
-  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.11",0,478,12,290,24,2);
+  Control(L"STATIC",L"UnReal World 3.89.1 — тренер 0.14",0,478,12,290,24,2);
   Control(L"STATIC",L"1. Загрузите персонажа. Нужна локальная карта, рядом с NPC; диалоги закрыты.",0,478,42,285,46,3);
   g_games=Control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL,478,94,285,200,10);
   g_refresh=Control(L"BUTTON",L"Найти игру",WS_TABSTOP,478,126,285,30,11);
@@ -155,7 +155,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
   Control(L"STATIC",L"Отдельный список этапов курса с отметками выполнения.",0,12,650,450,30,25);
   g_status=Control(L"STATIC",L"",0,12,694,750,48,6);SetTimer(hwnd,1,60,nullptr);SetTimer(hwnd,2,30,nullptr);
   if(g_browserTest){g_items={{25,"Club",ItemLabel("Club"),1},{302,"Arrow",L"Стрела | Arrow [#302]",1},{303,"Arrow",L"Стрела | Arrow [#303]",1},{1,"Nettle leaves",ItemLabel("Nettle leaves"),11}};SetTimer(hwnd,3,100,nullptr);return 0;}
-  Log(L"Тренер 0.11. Штатный ввод; фиксация очков включается отдельно.");Refresh();if(SelectGame())LoadItems();return 0;}
+  Log(L"Тренер 0.14. Штатный ввод; фиксация очков включается отдельно.");Refresh();if(SelectGame())LoadItems();return 0;}
  case WM_TIMER:if(w==3){KillTimer(hwnd,3);OpenItemWindow();}else if(w==2)TickSkillFreeze();else Tick();return 0;
  case WM_COMMAND:switch(LOWORD(w)){case 11:Refresh();if(SelectGame())LoadItems();break;case 13:Begin(false);break;case 14:Begin(true);break;case 30:OpenItemWindow();break;case 21:if(!g_busy&&SelectGame())LoadItems();break;case 22:CheckUpdate();break;case 23:Begin(false,false,true);break;case 24:OpenCourseWindow();break;case 26:StartSkillFreeze();break;case 27:StopSkillFreeze(L"Очки разморожены. Распределите оставшиеся повышения в игре.");break;case 15:Stop(L"Автоматика остановлена. Завершите открытый диалог в игре вручную.");break;}return 0;
  case WM_DESTROY:KillTimer(hwnd,1);KillTimer(hwnd,2);if(g_itemWindow)DestroyWindow(g_itemWindow);if(g_courseWindow)DestroyWindow(g_courseWindow);Disconnect();PostQuitMessage(0);return 0;
@@ -256,6 +256,6 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR command,int show){
   Disconnect();return 0;
  }
  WNDCLASSW c{};c.lpfnWndProc=WindowProc;c.hInstance=instance;c.lpszClassName=kClass;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
- HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.11",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,800,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
+ HWND window=CreateWindowExW(0,kClass,L"URW Quest Trainer 0.14",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,795,800,nullptr,nullptr,instance,nullptr);if(!window)return 1;ShowWindow(window,show);
  MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(g_itemWindow&&IsDialogMessageW(g_itemWindow,&msg))continue;TranslateMessage(&msg);DispatchMessageW(&msg);}return 0;
 }
