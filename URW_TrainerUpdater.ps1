@@ -1,4 +1,4 @@
-﻿param([string]$CurrentVersion='0.21',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
+﻿param([string]$CurrentVersion='0.23',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
 $ErrorActionPreference='Stop'
 $script:TrainerRepository='Librianets/UnRealWorld_QuestTrainer'
 $script:CompactFiles=@('URW_QuestTrainer.exe','URW_TrainerUpdater.ps1','README.txt','CODE_LICENSE.txt','build.cmd','src/QuestTrainer.cpp','src/QuestPlan.h','src/NativeState.h','src/TrainerFlow.h','src/HookState.h')
