@@ -14,7 +14,7 @@
 bool g_editorTest=false,g_editorAutoTest=false;
 struct CharacterWindow {
  HWND window=nullptr,list=nullptr,group=nullptr,search=nullptr,value=nullptr,help=nullptr,status=nullptr,name=nullptr;
- HWND minus=nullptr,plus=nullptr,minimum=nullptr,maximum=nullptr,stage=nullptr,resetField=nullptr,apply=nullptr,refresh=nullptr,discard=nullptr,close=nullptr;
+ HWND minus=nullptr,plus=nullptr,minimum=nullptr,maximum=nullptr,stage=nullptr,resetField=nullptr,apply=nullptr,refresh=nullptr,discard=nullptr,close=nullptr,bulk=nullptr;
  unsigned kind=0;bool filling=false,valid=false;uint32_t selected=0;
  characterstate::Snapshot snapshot;std::map<uint32_t,double> staged;std::vector<uint32_t> rows;
 };
@@ -47,12 +47,32 @@ bool CharacterValidate(const characterstate::FieldInfo& f,double value,std::wstr
  return true;
 }
 void CharacterSetStatus(CharacterWindow& w,const std::wstring& text){SetWindowTextW(w.status,text.c_str());}
+std::map<uint32_t,double> CharacterBulkPlan(const CharacterWindow& w){
+ std::map<uint32_t,double> plan;if(!w.valid||w.kind>2)return plan;
+ for(const auto& f:characterstate::Metadata()){
+  const auto* v=CharacterValue(w,f.id);if(!v)continue;
+  auto effective=CharacterEffectiveField(w,f);if(!effective.editable)continue;
+  double target=0;bool include=false;
+  if(w.kind==0&&(f.category==characterstate::Category::Attributes||f.category==characterstate::Category::Personality)){target=effective.maximum;include=effective.hasMaximum;}
+  if(w.kind==1&&f.category==characterstate::Category::Skills){target=effective.maximum;include=effective.hasMaximum;}
+  if(w.kind==2){
+   switch(f.id){case 200:case 204:case 206:case 207:case 208:target=0;include=true;break;case 201:case 202:target=effective.maximum;include=true;break;}
+   if(f.category==characterstate::Category::Wounds){target=0;include=true;}
+  }
+  if(include&&(target!=v->value||CharacterIsHealingAction(w,f.id,target)))plan[f.id]=target;
+ }
+ // All-active healing and an explicit zero form a single coherent reset even
+ // when the snapshot's blood counter was already zero.
+ if(w.kind==2)for(const auto& wound:w.snapshot.wounds)if(wound.type){plan[204]=0;break;}
+ return plan;
+}
 void CharacterControls(CharacterWindow& w){
  const auto* f=CharacterField(w.selected);const auto* v=CharacterValue(w,w.selected);bool edit=w.valid&&f&&v&&CharacterEffectiveField(w,*f).editable&&!g_busy&&!g_skillFrozen;
  for(HWND h:{w.value,w.minus,w.plus,w.stage,w.resetField})EnableWindow(h,edit);
  EnableWindow(w.minimum,edit&&f->hasMinimum);EnableWindow(w.maximum,edit&&f->hasMaximum);
  EnableWindow(w.apply,w.valid&&!w.staged.empty()&&!g_busy&&!g_skillFrozen&&!g_editorTest);
  EnableWindow(w.discard,!w.staged.empty());
+ EnableWindow(w.bulk,w.valid&&!g_busy&&!g_skillFrozen);
 }
 void CharacterDetails(CharacterWindow& w){
  const auto* f=CharacterField(w.selected);const auto* v=CharacterValue(w,w.selected);
@@ -75,6 +95,14 @@ void CharacterFill(CharacterWindow& w){
  SendMessageW(w.list,WM_SETREDRAW,TRUE,0);InvalidateRect(w.list,nullptr,TRUE);w.filling=false;CharacterDetails(w);
 }
 void CharacterStage(CharacterWindow& w,double value){const auto* f=CharacterField(w.selected);const auto* current=CharacterValue(w,w.selected);if(!w.valid||!f||!current)return;std::wstring error;if(!CharacterValidate(CharacterEffectiveField(w,*f),value,error)){CharacterSetStatus(w,error);return;}if(value==current->value&&!CharacterIsHealingAction(w,f->id,value))w.staged.erase(f->id);else w.staged[f->id]=value;CharacterFill(w);CharacterSetStatus(w,L"Запланировано изменений: "+std::to_wstring(w.staged.size())+L". Пока ничего не записано в игру.");}
+void CharacterBulk(CharacterWindow& w){
+ if(!w.valid||g_busy||g_skillFrozen)return;
+ w.staged=CharacterBulkPlan(w);CharacterFill(w);
+ std::wstring message=w.kind==0?L"Максимум характеристик и личности; рост и масса не меняются. ":w.kind==1?L"Все 30 навыков — 100%. ":L"Отдых, питание и лечение всех активных ран и недугов. ";
+ message+=w.staged.empty()?L"Параметры уже соответствуют выбранному состоянию.":L"Подготовлен план. Нажмите «Применить изменения».";
+ if(w.kind<2)message+=w.kind==0?L" Для полного максимума нужен стаж от 30 дней.":L" Для полного максимума нужен стаж от 100 дней.";
+ CharacterSetStatus(w,message);
+}
 bool CharacterMainCheck(HANDLE process,uintptr_t base,DWORD thread,std::wstring& error){
  if(!g_process||GetProcessId(process)!=g_pid||base!=g_base||thread!=g_thread){error=L"Подключение к игре изменилось. Обновите данные.";return false;}
  if(g_busy||g_skillFrozen){error=L"Сначала остановите автоматику и разморозьте очки.";return false;}
@@ -105,7 +133,7 @@ void CharacterApply(CharacterWindow& w){
 }
 HWND CharacterControl(CharacterWindow& w,const wchar_t* cls,const wchar_t* title,DWORD style,int id){HWND h=CreateWindowExW(!wcscmp(cls,L"EDIT")?WS_EX_CLIENTEDGE:0,cls,title,WS_CHILD|WS_VISIBLE|style,0,0,1,1,w.window,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);SendMessageW(h,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);return h;}
 void CharacterLayout(CharacterWindow& w){RECT r{};GetClientRect(w.window,&r);int x=r.right,y=r.bottom;auto move=[](HWND h,int a,int b,int c,int d){MoveWindow(h,a,b,std::max(c,1),std::max(d,1),TRUE);};
- move(w.name,12,10,x-24,24);move(w.group,12,40,215,200);move(w.search,239,40,x-251,26);move(w.list,12,78,x-24,y-335);move(w.help,12,y-245,x-24,84);
+ move(w.name,12,10,x-24,24);move(w.group,12,40,215,200);move(w.search,239,40,x-251,26);move(w.bulk,12,76,450,30);move(w.list,12,114,x-24,y-371);move(w.help,12,y-245,x-24,84);
  move(GetDlgItem(w.window,1100),12,y-150,128,24);move(w.value,142,y-154,105,26);move(w.minus,255,y-155,34,28);move(w.plus,295,y-155,34,28);move(w.minimum,337,y-155,82,28);move(w.maximum,427,y-155,82,28);move(w.stage,517,y-155,112,28);move(w.resetField,637,y-155,150,28);
  move(w.status,12,y-114,x-24,34);move(w.apply,12,y-72,180,32);move(w.refresh,202,y-72,170,32);move(w.discard,382,y-72,190,32);move(w.close,x-132,y-72,120,32);move(GetDlgItem(w.window,1101),12,y-29,x-24,22);
 }
@@ -116,12 +144,13 @@ LRESULT CALLBACK CharacterWindowProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){aut
   w->list=CharacterControl(*w,WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP,1113);ListView_SetExtendedListViewStyle(w->list,LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES|LVS_EX_DOUBLEBUFFER);const wchar_t* titles[]={L"Параметр",L"Сейчас",L"Запланировано",L"Допустимые значения",L"Единицы"};int widths[]={225,100,125,170,100};for(int i=0;i<5;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=const_cast<wchar_t*>(titles[i]);col.cx=widths[i];ListView_InsertColumn(w->list,i,&col);}
   w->help=CharacterControl(*w,L"STATIC",L"",0,1114);CharacterControl(*w,L"STATIC",L"Новое значение:",0,1100);w->value=CharacterControl(*w,L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP,1115);SendMessageW(w->value,EM_SETLIMITTEXT,48,0);
   w->minus=CharacterControl(*w,L"BUTTON",L"−",WS_TABSTOP,1120);w->plus=CharacterControl(*w,L"BUTTON",L"+",WS_TABSTOP,1121);w->minimum=CharacterControl(*w,L"BUTTON",L"Минимум",WS_TABSTOP,1122);w->maximum=CharacterControl(*w,L"BUTTON",L"Максимум",WS_TABSTOP,1123);w->stage=CharacterControl(*w,L"BUTTON",L"В план",WS_TABSTOP,1124);w->resetField=CharacterControl(*w,L"BUTTON",L"Сбросить параметр",WS_TABSTOP,1125);
+  w->bulk=CharacterControl(*w,L"BUTTON",w->kind==0?L"Все параметры на максимум (кроме роста и массы)":w->kind==1?L"Все навыки на максимум":L"Привести состояние к норме",WS_TABSTOP,1134);
   w->status=CharacterControl(*w,L"STATIC",L"",0,1126);w->apply=CharacterControl(*w,L"BUTTON",L"Применить изменения",WS_TABSTOP,1130);w->refresh=CharacterControl(*w,L"BUTTON",L"Обновить данные",WS_TABSTOP,1131);w->discard=CharacterControl(*w,L"BUTTON",L"Сбросить весь план",WS_TABSTOP,1132);w->close=CharacterControl(*w,L"BUTTON",L"Закрыть",WS_TABSTOP,1133);CharacterControl(*w,L"STATIC",L"Кнопки меняют план. «Применить» проверяет весь набор значений и ограничения игры по стажу.",0,1101);SetTimer(hwnd,1,250,nullptr);CharacterLayout(*w);return 0;}
  case WM_SIZE:CharacterLayout(*w);return 0;case WM_GETMINMAXINFO:((MINMAXINFO*)lp)->ptMinTrackSize={850,600};return 0;
  case WM_TIMER:CharacterControls(*w);return 0;
  case WM_NOTIFY:if(((NMHDR*)lp)->hwndFrom==w->list&&((NMHDR*)lp)->code==LVN_ITEMCHANGED&&!w->filling){int i=ListView_GetNextItem(w->list,-1,LVNI_SELECTED);w->selected=i>=0&&i<(int)w->rows.size()?w->rows[i]:0;CharacterDetails(*w);}return 0;
  case WM_COMMAND:{int id=LOWORD(wp);if(w->filling)return 0;if((id==1112&&HIWORD(wp)==EN_CHANGE)||(id==1111&&HIWORD(wp)==CBN_SELCHANGE)){CharacterFill(*w);return 0;}
-  if(id==1130)CharacterApply(*w);else if(id==1131)CharacterRefresh(*w);else if(id==1132){w->staged.clear();CharacterFill(*w);CharacterSetStatus(*w,L"План очищен. Значения игры не изменены.");}else if(id==1133)SendMessageW(hwnd,WM_CLOSE,0,0);else if(id==1125){w->staged.erase(w->selected);CharacterFill(*w);CharacterSetStatus(*w,L"Изменение выбранного параметра отменено.");}
+  if(id==1134)CharacterBulk(*w);else if(id==1130)CharacterApply(*w);else if(id==1131)CharacterRefresh(*w);else if(id==1132){w->staged.clear();CharacterFill(*w);CharacterSetStatus(*w,L"План очищен. Значения игры не изменены.");}else if(id==1133)SendMessageW(hwnd,WM_CLOSE,0,0);else if(id==1125){w->staged.erase(w->selected);CharacterFill(*w);CharacterSetStatus(*w,L"Изменение выбранного параметра отменено.");}
   else if(id>=1120&&id<=1124){const auto* f=CharacterField(w->selected);if(!f)return 0;auto effective=CharacterEffectiveField(*w,*f);double n=0;if(id==1122&&effective.hasMinimum)n=effective.minimum;else if(id==1123&&effective.hasMaximum)n=effective.maximum;else{if(!CharacterParse(CharacterText(w->value),n)){CharacterSetStatus(*w,L"Введите число; допустимы точка или запятая.");return 0;}if(id==1120)n-=effective.step;if(id==1121)n+=effective.step;}CharacterStage(*w,n);}return 0;}
  case WM_CLOSE:if(!w->staged.empty()&&!g_editorAutoTest&&MessageBoxW(hwnd,L"Закрыть окно и сбросить неприменённые изменения?",L"Неприменённые изменения",MB_YESNO|MB_ICONQUESTION)!=IDYES)return 0;DestroyWindow(hwnd);return 0;
  case WM_DESTROY:KillTimer(hwnd,1);w->window=nullptr;w->valid=false;w->staged.clear();w->snapshot={};return 0;
@@ -138,10 +167,22 @@ int CharacterModelTests(int& checks){int failed=0;auto check=[&](bool okay){++ch
  check(CharacterParse(CharacterNumber(twice+1),twice));check(CharacterParse(CharacterNumber(twice-1),twice)&&float(twice)==float(0.6666666865348816));
  characterstate::FieldInfo f{999,L"Test",L"",L"",characterstate::Category::Skills,characterstate::Storage::Integer,0,100,1,true,true,true};std::wstring e;check(CharacterValidate(f,0,e));check(CharacterValidate(f,100,e));check(!CharacterValidate(f,-1,e));check(!CharacterValidate(f,101,e));check(!CharacterValidate(f,1.25,e));f.storage=characterstate::Storage::Real;check(CharacterValidate(f,1.25,e));f.editable=false;check(!CharacterValidate(f,50,e));check(CharacterNumber(3.5)==L"3.5");check(CharacterNumber(0)==L"0");check(CharacterCategoryAllowed(0,characterstate::Category::Personality));check(!CharacterCategoryAllowed(0,characterstate::Category::States));check(CharacterCategoryAllowed(2,characterstate::Category::Wounds));
  CharacterWindow w;w.snapshot.values={{2,10},{3000,0},{3001,7}};characterstate::WoundInfo active{};active.index=0;active.type=1;active.healing=1;w.snapshot.wounds.push_back(active);characterstate::WoundInfo expired{};expired.index=1;expired.type=1;expired.penalty=7;w.snapshot.wounds.push_back(expired);
- auto wound=*CharacterField(3000);check(CharacterEffectiveField(w,wound).editable);check(CharacterEffectiveField(w,wound).maximum==0);check(CharacterIsHealingAction(w,3000,0));check(!CharacterIsHealingAction(w,3000,1));check(CharacterEffectiveField(w,*CharacterField(3001)).maximum==0);check(!CharacterEffectiveField(w,*CharacterField(3002)).editable);check(CharacterEffectiveField(w,*CharacterField(204)).maximum==40);w.staged[2]=12;check(CharacterEffectiveField(w,*CharacterField(204)).maximum==48);return failed;}
+ auto wound=*CharacterField(3000);check(CharacterEffectiveField(w,wound).editable);check(CharacterEffectiveField(w,wound).maximum==0);check(CharacterIsHealingAction(w,3000,0));check(!CharacterIsHealingAction(w,3000,1));check(CharacterEffectiveField(w,*CharacterField(3001)).maximum==0);check(!CharacterEffectiveField(w,*CharacterField(3002)).editable);check(CharacterEffectiveField(w,*CharacterField(204)).maximum==40);w.staged[2]=12;check(CharacterEffectiveField(w,*CharacterField(204)).maximum==48);
+ CharacterWindow all;all.valid=true;all.kind=0;
+ for(const auto& field:characterstate::Metadata())all.snapshot.values.push_back({field.id,field.hasMinimum?field.minimum:0});
+ all.snapshot.values.push_back({9999,7});all.staged={{20,96},{21,500}};all.rows={1};
+ auto attributes=CharacterBulkPlan(all);check(attributes.size()==11);check(!attributes.count(20)&&!attributes.count(21));for(uint32_t id=1;id<=11;++id)check(attributes[id]==18);
+ all.kind=1;auto skills=CharacterBulkPlan(all);check(skills.size()==30);for(uint32_t id=100;id<130;++id)check(skills[id]==100);
+ all.kind=2;all.snapshot.wounds.push_back({0,25,1,0,0,0,1,9,0,L""});
+ for(auto& v:all.snapshot.values)if(v.id==200||v.id==204||v.id==206||v.id==207||v.id==208)v.value=10;
+ auto normal=CharacterBulkPlan(all);check(normal.size()==8);check(normal[201]==5000&&normal[202]==255);for(auto id:{200u,204u,206u,207u,208u,3000u})check(normal.count(id)&&normal[id]==0);
+ check(!normal.count(203)&&!normal.count(205)&&!normal.count(3001));check(CharacterValue(all,200)->value==10);check(all.snapshot.wounds[0].type==25);check(all.staged.count(20)==1);
+ all.valid=false;check(CharacterBulkPlan(all).empty());
+return failed;}
 void CharacterWindowSelfTest(){int checks=0,failed=0;auto check=[&](bool x){++checks;if(!x)++failed;};
  for(unsigned kind=0;kind<3;++kind){OpenCharacterWindow(kind);auto& w=g_characterWindows[kind];check(w.window!=nullptr);check(w.valid);check(!IsWindowEnabled(w.apply));check(w.staged.empty());check(ListView_GetItemCount(w.list)==(int)w.rows.size());
   for(uint32_t id:w.rows){const auto* f=CharacterField(id);if(f&&f->editable){w.selected=id;CharacterDetails(w);auto* v=CharacterValue(w,id);if(v){double target=v->value+f->step;if(f->hasMaximum&&target>f->maximum)target=v->value-f->step;std::wstring err;if(CharacterValidate(*f,target,err)&&target!=v->value){CharacterStage(w,target);check(w.staged.count(id)==1);check(CharacterValue(w,id)->value==v->value);check(!IsWindowEnabled(w.apply));CharacterApply(w);check(w.staged.count(id)==1);CharacterStage(w,v->value);check(w.staged.empty());}}break;}}
+  check(w.bulk&&IsWindowEnabled(w.bulk));SendMessageW(w.window,WM_COMMAND,1134,0);check(!w.staged.empty());check(!w.staged.count(20)&&!w.staged.count(21));check(!IsWindowEnabled(w.apply));SendMessageW(w.window,WM_COMMAND,1132,0);check(w.staged.empty());
   SendMessageW(w.window,WM_CLOSE,0,0);check(w.window==nullptr);
  }
  std::ofstream out("TRAINER_EDITOR_SELFTEST.json");out<<"{\"checks\":"<<checks<<",\"failures\":"<<failed<<",\"fixture_only\":true,\"game_write_handles_opened\":0,\"windows\":3}\n";PostMessageW(g_window,WM_CLOSE,0,0);

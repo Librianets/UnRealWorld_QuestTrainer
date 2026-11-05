@@ -206,10 +206,22 @@ inline bool Plan(const Snapshot& current,const std::vector<Edit>& edits,std::vec
   uint32_t value=uint32_t(e.value);if(b->floating){float f=float(e.value);memcpy(&value,&f,4);}if(!set(b->va,value,b->size)){error=L"Размер поля не подтверждён.";return false;}
  }
  if(woundEdit){
-  if(ids.count(204)){error=L"Лечение ран и ручную кровопотерю применяйте отдельно.";return false;}
+  //026: explicit bloodloss reset is allowed only with complete healing of
+  // every active record, including ailments with an already-zero penalty.
+  bool resetBlood=false;
+  if(ids.count(204)){
+   auto bloodEdit=std::find_if(edits.begin(),edits.end(),[](const Edit&e){return e.id==204;});
+   bool allHealed=bloodEdit!=edits.end()&&bloodEdit->value==0;
+   for(const auto&w:current.wounds)if(w.type){
+    auto heal=std::find_if(edits.begin(),edits.end(),[&](const Edit&e){return e.id==3000+w.index;});
+    allHealed=allHealed&&heal!=edits.end()&&heal->value==0;
+   }
+   if(!allHealed){error=L"Сброс кровопотери вместе с лечением разрешён только при полном лечении всех активных ран и недугов.";return false;}
+   resetBlood=true;
+  }
   unsigned sum=0;for(auto&w:current.wounds)if(w.type)sum+=w.penalty;
   if(penalty<0||unsigned(penalty)!=sum||penalty<woundPenalty||blood<bleeding){error=L"Связанные счётчики ран не согласованы; лечение не выполнено.";return false;}
-  if(!set(0xA72B18C,uint32_t(penalty-woundPenalty),4)||!set(0xA72B194,uint32_t(blood-bleeding),4))return false;
+  if(!set(0xA72B18C,uint32_t(penalty-woundPenalty),4)||!set(0xA72B194,resetBlood?0u:uint32_t(blood-bleeding),4))return false;
  }
  if(!CheckAcceptance(current,changes,error,nativeRejected))return false;
  for(auto&kv:changes){auto*c=Cell(current,kv.first);if(c&&c->bytes!=kv.second)writes.push_back({kv.first,c->bytes,kv.second});}
