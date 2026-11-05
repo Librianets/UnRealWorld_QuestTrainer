@@ -1,7 +1,19 @@
-﻿param([string]$CurrentVersion='0.11',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
+﻿param([string]$CurrentVersion='0.21',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
 $ErrorActionPreference='Stop'
 $script:TrainerRepository='Librianets/UnRealWorld_QuestTrainer'
-$script:AllowedFiles=@('URW_QuestTrainer.exe','URW_TrainerUpdater.ps1','README.txt','CODE_LICENSE.txt','build.cmd','src/QuestTrainer.cpp','src/QuestPlan.h','src/NativeState.h','src/TrainerFlow.h','src/HookState.h')
+$script:CompactFiles=@('URW_QuestTrainer.exe','URW_TrainerUpdater.ps1','README.txt','CODE_LICENSE.txt','build.cmd','src/QuestTrainer.cpp','src/QuestPlan.h','src/NativeState.h','src/TrainerFlow.h','src/HookState.h')
+$script:LegacyFullSourceFiles=@($script:CompactFiles)+@('src/CharacterState.h','src/CharacterWindows.h','src/ItemCatalogue.h','src/TimeAdvance.h')
+$script:FullSourceFiles=@($script:LegacyFullSourceFiles)+@('src/AnimalPolicy.h','src/AnimalSpawn.h')
+function Get-TrainerExpectedFiles($Manifest){
+ # The10-file compact source layout lets the original015/016 updater install017.
+ # Accept the historical14-file layout and the new16-file split source layout.
+ $count=@($Manifest.files.psobject.Properties.Name).Count
+ if($count -eq $script:CompactFiles.Count){return $script:CompactFiles}
+ if($count -eq $script:LegacyFullSourceFiles.Count){return $script:LegacyFullSourceFiles}
+ if($count -eq $script:FullSourceFiles.Count){return $script:FullSourceFiles}
+ throw 'Incomplete update file list.'
+}
+
 function Read-TrainerVersion([string]$Value){
  if($Value -notmatch '^\d+\.\d{2}$'){throw 'Invalid trainer version.'}
  return [version]$Value
@@ -11,13 +23,14 @@ function Test-TrainerManifest($Manifest){
  $null=Read-TrainerVersion ([string]$Manifest.version)
  if($Manifest.archive -cne ('URW_QuestTrainer_'+$Manifest.version+'.zip') -or $Manifest.sha256 -notmatch '^[a-f0-9]{64}$'){throw 'Invalid archive identity.'}
  $names=@($Manifest.files.psobject.Properties.Name)
- if($names.Count -ne $script:AllowedFiles.Count){throw 'Incomplete update file list.'}
+ $expected=@(Get-TrainerExpectedFiles $Manifest)
  foreach($name in $names){
-  if($script:AllowedFiles -cnotcontains $name -or $Manifest.files.$name -notmatch '^[a-f0-9]{64}$'){throw 'Unsupported update file.'}
+  if($expected -cnotcontains $name -or $Manifest.files.$name -notmatch '^[a-f0-9]{64}$'){throw 'Unsupported update file.'}
  }
 }
 function Test-TrainerArchive([string]$Archive,$Manifest){
  Test-TrainerManifest $Manifest
+ $expected=@(Get-TrainerExpectedFiles $Manifest)
  if((Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant() -cne $Manifest.sha256){throw 'Archive SHA256 mismatch.'}
  Add-Type -AssemblyName System.IO.Compression.FileSystem
  $z=[IO.Compression.ZipFile]::OpenRead($Archive)
@@ -25,22 +38,24 @@ function Test-TrainerArchive([string]$Archive,$Manifest){
   $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
   foreach($entry in $z.Entries){
    $name=$entry.FullName
-   if($script:AllowedFiles -cnotcontains $name -or -not $seen.Add($name)){throw 'Unexpected or duplicate ZIP entry.'}
+   if($expected -cnotcontains $name -or -not $seen.Add($name)){throw 'Unexpected or duplicate ZIP entry.'}
    if($entry.Length -gt 16777216){throw 'Update file exceeds size limit.'}
    $stream=$entry.Open();$hash=[Security.Cryptography.SHA256]::Create()
    try{$actual=([BitConverter]::ToString($hash.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose();$hash.Dispose()}
    if($actual -cne $Manifest.files.$name){throw 'Update file SHA256 mismatch.'}
   }
-  if($seen.Count -ne $script:AllowedFiles.Count){throw 'Missing update file.'}
+  if($seen.Count -ne $expected.Count){throw 'Missing update file.'}
  }finally{$z.Dispose()}
 }
 function Install-TrainerFiles([string]$Stage,[string]$Destination,$Manifest){
+ Test-TrainerManifest $Manifest
+ $expected=@(Get-TrainerExpectedFiles $Manifest)
  $backup=Join-Path $Destination 'URW_Trainer_backup'
  if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Recurse -Force}
  $null=New-Item -ItemType Directory -Path $backup
  $changed=New-Object 'System.Collections.Generic.List[string]'
  try{
-  foreach($name in $script:AllowedFiles){
+  foreach($name in $expected){
    $target=Join-Path $Destination $name;$old=Join-Path $backup $name
    if(Test-Path -LiteralPath $target){$null=New-Item -ItemType Directory -Force -Path (Split-Path $old);Copy-Item -LiteralPath $target -Destination $old}
    $changed.Add($name);$null=New-Item -ItemType Directory -Force -Path (Split-Path $target)

@@ -1,18 +1,33 @@
-#pragma once
-struct ItemEntry {uint32_t id;std::string name;std::wstring label;unsigned category=0;};
+﻿#pragma once
+#include "ItemCatalogue.h"
+// Trainer017 live native item catalogue.
+struct ItemEntry {uint32_t id;std::string name;std::wstring label;unsigned category=0;itemcatalogue::Record record{};};
+itemcatalogue::Record g_itemRecord{};
 std::vector<ItemEntry> g_items;
+int g_inventoryBeforeExact=-1;
 int g_inventoryBefore=0;uint32_t g_groundBefore=0;int g_groundEntity=-1;int g_created=0;
 std::vector<uint16_t> g_groundCounts;
 std::string Lower(std::string s){for(char& ch:s)if(ch>='A'&&ch<='Z')ch+=32;return s;}
 std::string ItemName(uint32_t id){
- if(!id||id>99900)return {};
- uintptr_t at=id<50000?0x58F9FF8+172*id:0x59216A8+172*(id-50000);
- return TextAt(at+9,80);
+ auto at=itemcatalogue::Address(id);if(!at)return {};
+ itemcatalogue::Record record{};std::string name;unsigned category=0;
+ return Read(at,record.data(),record.size())&&itemcatalogue::Decode(id,record,name,category)?name:std::string{};
+}
+static bool ItemRecordCurrent(uint32_t id,const itemcatalogue::Record& expected){
+ itemcatalogue::Record actual{};auto at=itemcatalogue::Address(id);
+ return at&&Read(at,actual.data(),actual.size())&&itemcatalogue::SameRecord(id,expected,actual);
 }
 int InventoryCount(const std::string& name){
  uint32_t ids[100]{},counts[100]{};
  if(!Read(0xA72ACD0,ids,sizeof(ids))||!Read(0xA72AE60,counts,sizeof(counts)))return -1;
  int sum=0;for(int i=0;i<100;++i)if(ids[i]&&Lower(ItemName(ids[i]))==Lower(name))sum+=counts[i];return sum;
+}
+static int InventoryIdCount(uint32_t id){
+ if(!itemcatalogue::ValidId(id))return -1;
+ uint32_t ids[100]{},counts[100]{};
+ if(!Read(0xA72ACD0,ids,sizeof(ids))||!Read(0xA72AE60,counts,sizeof(counts)))return -1;
+ uint64_t total=0;for(unsigned i=0;i<100;++i)if(ids[i]==id)total+=counts[i];
+ return total>0x7fffffff?-1:(int)total;
 }
 static std::wstring Utf8Label(const std::string& s){
  if(s.empty())return {};int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s.data(),(int)s.size(),nullptr,0);
@@ -367,8 +382,8 @@ static std::string ItemRussian(const std::string& source){
   {"Yellow fingers mushroom","жёлтый пальчик"},
   {"Yellowcoat mushroom","жёлтый кафтан"},
  };
- for(const auto& row:labels)if(source==row.first)return row.second;
- return {};
+ for(const auto& row:labels)if(Lower(source)==Lower(row.first))return row.second;
+ return itemcatalogue::FamilyRussian(source);
 }
 static bool SameItemLabel(const std::wstring& a,const std::wstring& b){return CompareStringOrdinal(a.c_str(),-1,b.c_str(),-1,TRUE)==CSTR_EQUAL;}
 static std::wstring ItemLabel(const std::string& source){auto ru=Utf8Label(ItemRussian(source));return ru.empty()?Wide(source):ru+L" | "+Wide(source);}
@@ -384,24 +399,32 @@ static const ItemEntry* ResolveItem(const std::wstring& text,uint32_t selected,b
 }
 void LoadItems(){
  g_items.clear();SendMessageW(g_item,CB_RESETCONTENT,0,0);
- std::vector<unsigned char> bytes(400*172);
- if(!Read(0x58F9FF8,bytes.data(),bytes.size())){RefreshItemBrowser(true);Log(L"Не удалось прочитать список предметов из игры.");return;}
- for(uint32_t id=1;id<400;++id){
-  auto at=bytes.data()+id*172;if(!at[0])continue;
-  size_t n=0;while(n<80&&at[9+n])++n;if(!n||n>49)continue;
-  std::string name((char*)at+9,n);bool valid=true;
-  for(unsigned char c:name)if(c<32||c>126||c=='*')valid=false;
-  if(!valid)continue;g_items.push_back({id,name,{},at[0]});
+ unsigned baseCount=0,dynamicCount=0;
+ auto addBank=[&](uint32_t first,uint32_t count){
+  constexpr uint32_t block=256;std::array<itemcatalogue::Record,block> records{};
+  for(uint32_t offset=0;offset<count;offset+=block){auto n=std::min(block,count-offset);
+   if(!Read(itemcatalogue::Address(first+offset),records.data(),n*itemcatalogue::kRecordSize))return false;
+   for(uint32_t i=0;i<n;++i){uint32_t id=first+offset+i;std::string name;unsigned category=0;
+    if(!itemcatalogue::Decode(id,records[i],name,category))continue;
+    g_items.push_back({id,name,{},category,records[i]});if(id<50000)++baseCount;else ++dynamicCount;
+   }
+  }return true;
+ };
+ if(!addBank(1,itemcatalogue::kBaseCount-1)){g_items.clear();RefreshItemBrowser(true);Log(L"Не удалось прочитать базовые предметы игры.");return;}
+ if(!addBank(itemcatalogue::kDynamicFirst,itemcatalogue::kDynamicCount)){
+  g_items.erase(std::remove_if(g_items.begin(),g_items.end(),[](const ItemEntry& i){return i.id>=50000;}),g_items.end());dynamicCount=0;
+  Log(L"Варианты предметов не прочитаны полностью; показаны только базовые предметы.");
  }
+ std::map<std::string,unsigned> repeated;for(auto& item:g_items)++repeated[Lower(item.name)];
  for(auto& item:g_items){item.label=ItemLabel(item.name);
-  if(std::count_if(g_items.begin(),g_items.end(),[&](const ItemEntry& other){return Lower(item.name)==Lower(other.name);})>1)item.label+=L" [#"+std::to_wstring(item.id)+L"]";
+  if(repeated[Lower(item.name)]>1)item.label+=L" [#"+std::to_wstring(item.id)+L"]";
  }
  std::sort(g_items.begin(),g_items.end(),[](const ItemEntry&a,const ItemEntry&b){auto order=CompareStringOrdinal(a.label.c_str(),-1,b.label.c_str(),-1,TRUE);return order==CSTR_EQUAL?a.id<b.id:order==CSTR_LESS_THAN;});
  for(const auto& item:g_items){auto pos=SendMessageW(g_item,CB_ADDSTRING,0,(LPARAM)item.label.c_str());SendMessageW(g_item,CB_SETITEMDATA,pos,item.id);}
  SendMessageW(g_item,CB_SETDROPPEDWIDTH,650,0);
  SetWindowTextW(g_item,ItemLabel("Nettle leaves").c_str());
  RefreshItemBrowser(true);
- Log(L"Прочитано прототипов предметов: "+std::to_wstring(g_items.size()));
+ Log(L"Базовых предметов: "+std::to_wstring(baseCount)+L"; вариантов из текущего мира: "+std::to_wstring(dynamicCount)+L". Отсутствующие в мире варианты не создаются вымышленными ID.");
 }
 // Prototype byte0 is the category passed to the game's448AD0 category mapper.
 static std::wstring ItemCategory(unsigned type){switch(type){
@@ -420,7 +443,7 @@ static std::wstring ItemSearchBase(std::wstring text){
 }
 static bool ItemSearchMatches(const ItemEntry& item,const std::wstring& query){
  auto q=ItemSearchBase(query);if(q.empty())return true;
- auto hay=ItemLower(Utf8Label(ItemRussian(item.name))+L" "+Wide(item.name)+L" "+std::to_wstring(item.id));
+ auto hay=ItemLower(Utf8Label(ItemRussian(item.name))+L" "+Wide(item.name)+L" "+std::to_wstring(item.id)+itemcatalogue::SearchAliases(item.category,item.name));
  std::wistringstream tokens(q);std::wstring token;while(tokens>>token)if(hay.find(token)==std::wstring::npos)return false;return true;
 }
 static int CompareItems(const ItemEntry& a,const ItemEntry& b,int column){
@@ -437,7 +460,7 @@ static const ItemEntry* BrowserSelection(){if(!g_itemList)return nullptr;int row
 static void ItemSelectionChanged(){if(g_itemFilling)return;auto* item=BrowserSelection();
  EnableWindow(g_add,item&&!g_busy);if(!item)return;
  int n=(int)SendMessageW(g_item,CB_GETCOUNT,0,0);for(int i=0;i<n;++i)if((uint32_t)SendMessageW(g_item,CB_GETITEMDATA,i,0)==item->id){SendMessageW(g_item,CB_SETCURSEL,i,0);break;}
- std::wstring hint=item->label+L" — "+ItemCategory(item->category)+L"; ID "+std::to_wstring(item->id)+L". Качество назначает игра.";SetWindowTextW(g_itemInfo,hint.c_str());
+ std::wstring hint=item->label+L" — "+ItemCategory(item->category)+L"; ID "+std::to_wstring(item->id)+(item->id>=50000?L". Вариант текущего мира: сохранены материал и свойства.":L". Базовый предмет: качество и свойства базового образца.");SetWindowTextW(g_itemInfo,hint.c_str());
 }
 void RefreshItemBrowser(bool types){if(!IsWindow(g_itemWindow))return;g_itemFilling=true;uint32_t selected=0;if(auto* old=BrowserSelection())selected=old->id;
  int ix=(int)SendMessageW(g_itemType,CB_GETCURSEL,0,0);int filter=ix<0?-1:(int)SendMessageW(g_itemType,CB_GETITEMDATA,ix,0);
@@ -456,7 +479,7 @@ void RefreshItemBrowser(bool types){if(!IsWindow(g_itemWindow))return;g_itemFill
  }
  if(choose<0&&!visible.empty())choose=0;if(choose>=0)ListView_SetItemState(g_itemList,choose,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
  SendMessageW(g_itemList,WM_SETREDRAW,TRUE,0);InvalidateRect(g_itemList,nullptr,TRUE);g_itemFilling=false;
- std::wstring info=L"Найдено: "+std::to_wstring(visible.size())+L" из "+std::to_wstring(g_items.size())+L". Выберите предмет. Качество назначает игра.";SetWindowTextW(g_itemInfo,info.c_str());ItemSelectionChanged();
+ std::wstring info=L"Найдено: "+std::to_wstring(visible.size())+L" из "+std::to_wstring(g_items.size())+L". Базовые предметы и существующие варианты текущего мира. Обновите список после загрузки другого персонажа.";SetWindowTextW(g_itemInfo,info.c_str());ItemSelectionChanged();
  if(g_busy)EnableWindow(g_add,FALSE);
 }
 bool SelectGame();
@@ -483,7 +506,7 @@ void OpenItemWindow(){if(IsWindow(g_itemWindow)){ShowWindow(g_itemWindow,SW_SHOW
  g_itemInfo=add(L"STATIC",L"",0,12,540,995,42,104);
  add(L"STATIC",L"Количество (1–100):",0,12,596,165,22,18);g_quantity=add(L"EDIT",L"1",ES_NUMBER|WS_TABSTOP,180,591,80,28,19);SendMessageW(g_quantity,EM_SETLIMITTEXT,3,0);
  g_add=add(L"BUTTON",L"Добавить в инвентарь",WS_TABSTOP,280,588,320,34,20);add(L"BUTTON",L"Обновить список из игры",WS_TABSTOP,620,588,388,34,21);
- add(L"STATIC",L"fine club → Club / дубина. В списке базовые предметы; качество при создании определяет игра.",0,12,635,996,25,105);
+ add(L"STATIC",L"Поиск: мех / fur, шкура / skin, нить / yarn. Варианты из мира сохраняют материал и свойства.",0,12,635,996,25,105);
  g_item=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST,0,0,1,1,17);ShowWindow(g_item,SW_HIDE);
  if(!g_browserTest&&SelectGame())LoadItems();else RefreshItemBrowser(true);
  ShowWindow(g_itemWindow,SW_SHOWNORMAL);SetForegroundWindow(g_itemWindow);SetFocus(g_itemSearch);
@@ -496,6 +519,15 @@ bool GroundCounts(std::vector<uint16_t>& counts){
   memcpy(&xx,at,2);memcpy(&yy,at+2,2);memcpy(&n,at+8,2);memcpy(&item,at+12,4);
   if(at[4]==1&&xx==x&&yy==y&&item==g_itemId)counts[i]=n;
  }return true;
+}
+static bool ItemPickupConfirmed(){
+ // A lone item can be picked up immediately; the next reader may be a message,
+ // not Main. Confirm committed inventory+ground deltas without sending input.
+ if(g_created!=g_itemCount||g_inventoryBeforeExact<0)return false;
+ if(InventoryIdCount(g_itemId)!=g_inventoryBeforeExact+g_itemCount)return false;
+ std::vector<uint16_t> ground;if(!GroundCounts(ground))return false;
+ uint64_t total=0;for(auto n:ground)total+=n;
+ return itemcatalogue::PickupCommitted(g_inventoryBeforeExact,InventoryIdCount(g_itemId),g_groundBefore,total,g_created,g_itemCount);
 }
 void Step(int phase,ULONGLONG now,int timeout=6000){g_phase=phase;g_due=now+160;g_stepDeadline=now+timeout;}
 bool SendChecked(wchar_t key){if(SendKey(key))return true;Stop(L"Не удалось передать клавишу. Дальнейший ввод остановлен.");return false;}
@@ -588,8 +620,8 @@ void CourseStart(){
  if(!SameCourse(data,g_courseData)||data.current!=g_courseData.current||data.flag!=g_courseData.flag){RefreshCourse(true);Log(L"Состояние курса изменилось. Список обновлён; проверьте отметки и повторите.");return;}
  std::vector<bool> checked(data.tasks.size(),false);for(int i=0;i<(int)checked.size();++i)checked[i]=ListView_GetCheckState(g_courseList,i)!=FALSE;
  std::vector<int> queue;if(!CourseSelection(data.current,(int)data.tasks.size(),checked,queue)){Log(L"Отметьте текущий этап или несколько подряд от него. Невыбранные этапы тренер не пропускает.");return;}
- if(IsIconic(g_game))ShowWindow(g_game,SW_RESTORE);SetForegroundWindow(g_game);
- if(GetForegroundWindow()!=g_game){Log(L"Не удалось переключиться на игру. Повторите.");return;}
+ if(!EnsureGameForeground()){Log(L"Не удалось переключиться на игру после коротких повторов. Ввод не отправлен.");return;}
+ native=ProbeNative();if(native.stage!=NativeStage::Main&&native.stage!=NativeStage::Course){Log(L"Состояние игры изменилось при переключении окна. Ввод не отправлен.");return;}
  g_previousLayout=GetKeyboardLayout(g_thread);g_english=LoadKeyboardLayoutW(L"00000409",0);DWORD_PTR ignored=0;
  if(!g_english||!SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_english,SMTO_ABORTIFHUNG,500,&ignored)){LayoutBack();Log(L"Не удалось включить английскую раскладку.");return;}
  g_courseJob=data;g_courseQueue=queue;g_courseNext=0;g_courseExpected=queue.front();g_courseBusy=true;g_busy=true;g_itemMode=g_daysMode=false;
@@ -759,13 +791,15 @@ void Begin(bool native,bool item=false,bool days=false){
   int selection=(int)SendMessageW(g_item,CB_GETCURSEL,0,0);uint32_t selected=selection>=0?(uint32_t)SendMessageW(g_item,CB_GETITEMDATA,selection,0):0;
   bool ambiguous=false;const ItemEntry* entry=ResolveItem(text,selected,ambiguous);
   if(!entry){Log(ambiguous?L"У этого названия несколько прототипов. Выберите строку с нужным ID из списка.":L"Предмет не найден. Выберите русский или английский вариант из списка.");return;}
-  g_itemId=entry->id;g_itemName=entry->name;g_itemLabel=entry->label;
+  if(!ItemRecordCurrent(entry->id,entry->record)){Log(L"Предмет изменился с момента чтения списка. Обновите список и выберите его снова. Ввод не отправлен.");return;}
+  g_itemId=entry->id;g_itemName=entry->name;g_itemLabel=entry->label;g_itemRecord=entry->record;
   // Native key y takes the exact prototype ID, avoiding the substring-name factory.
-  g_inventoryBefore=InventoryCount(g_itemName);
-  if(g_inventoryBefore<0||!GroundCounts(g_groundCounts)){Log(L"Не удалось прочитать инвентарь/предметы.");return;}
+  g_inventoryBefore=InventoryCount(g_itemName);g_inventoryBeforeExact=InventoryIdCount(g_itemId);
+  if(g_inventoryBefore<0||g_inventoryBeforeExact<0||!GroundCounts(g_groundCounts)){Log(L"Не удалось прочитать инвентарь/предметы.");return;}
+  g_groundBefore=0;for(auto n:g_groundCounts)g_groundBefore+=n;
  }
- if(IsIconic(g_game))ShowWindow(g_game,SW_RESTORE);SetForegroundWindow(g_game);
- if(GetForegroundWindow()!=g_game){Log(L"Не удалось переключиться на игру. Повторите.");return;}
+ if(!EnsureGameForeground()){Log(L"Не удалось переключиться на игру после коротких повторов. Ввод не отправлен.");return;}
+ if(ProbeNative().stage!=NativeStage::Main){Log(L"Состояние игры изменилось при переключении окна. Ввод не отправлен.");return;}
  g_previousLayout=GetKeyboardLayout(g_thread);g_english=LoadKeyboardLayoutW(L"00000409",0);DWORD_PTR ignored=0;
  if(!g_english||!SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_english,SMTO_ABORTIFHUNG,500,&ignored)){LayoutBack();Log(L"Не удалось включить английскую раскладку.");return;}
  g_type=native?0:type;g_plan.Reset(type);g_before=NumberAt(kCounter);g_phase=0;g_hadFirst=false;g_busy=true;
@@ -777,7 +811,7 @@ void Begin(bool native,bool item=false,bool days=false){
 void Tick(){
  if(!g_busy)return;auto now=GetTickCount64();if(now<g_due)return;
  if(WaitForSingleObject(g_process,0)!=WAIT_TIMEOUT){Stop(L"Процесс игры закрыт.");return;}
- if(GetForegroundWindow()!=g_game){Stop(L"Остановлено: окно игры потеряло фокус. Открытый диалог завершите вручную.");return;}
+ if(!EnsureGameForeground()){Stop(L"Остановлено: не удалось вернуть фокус игре. Открытый диалог завершите вручную.");return;}now=GetTickCount64();
  if(now>g_deadline||now>g_stepDeadline){Log(L"Ожидался этап "+std::to_wstring(g_phase)+L". Возврат на основной экран может потребовать Esc, если остался выбор цели.");Stop(L"Ожидаемое состояние игры не подтверждено. Ввод остановлен; новое задание/выдача не подтверждены.");return;}
  auto state=ProbeNative();
  if(g_courseBusy){CourseTick(state,now);return;}
@@ -790,7 +824,7 @@ void Tick(){
  if(g_phase==10){if(state.stage!=NativeStage::Minus)return;Log(L"Вход в служебную функцию подтверждён.");if(SendChecked(L'-'))Step(11,now);return;}
  if(g_phase==11){if(state.stage!=NativeStage::LetterJ)return;if(SendChecked(L'j'))Step(12,now);return;}
  if(g_phase==12){if(state.stage!=NativeStage::Command)return;if(SendChecked(g_daysMode?L'd':g_itemMode?L'y':L'\r'))Step(13,now);return;}
- if(g_phase==13){TypeChecked(state,g_daysMode?NativeStage::DayCount:g_itemMode?NativeStage::ItemName:NativeStage::DebugText,g_daysMode?std::to_string(g_dayDelta):g_itemMode?std::to_string(g_itemId):"dq",g_daysMode?30:g_itemMode?20:1,now);return;}
+ if(g_phase==13){if(g_itemMode&&!ItemRecordCurrent(g_itemId,g_itemRecord)){Stop(L"Данные выбранного предмета изменились. Ввод остановлен; закройте диалог игры и обновите список.");return;}TypeChecked(state,g_daysMode?NativeStage::DayCount:g_itemMode?NativeStage::ItemName:NativeStage::DebugText,g_daysMode?std::to_string(g_dayDelta):g_itemMode?std::to_string(g_itemId):"dq",g_daysMode?30:g_itemMode?20:1,now);return;}
  if(g_phase==30){
   if(state.stage!=NativeStage::Main)return;
   uint32_t day=NumberAt(0xA72B1C4),minutes=NumberAt(0xA72B8E0);
@@ -827,7 +861,8 @@ void Tick(){
   if(SendChecked(L'g'))Step(21,now);return;
  }
  if(g_phase==21){
-  if(state.stage==NativeStage::Main){int count=InventoryCount(g_itemName);if(count>=g_inventoryBefore+g_itemCount){Stop(L"Предметы добавлены в инвентарь.");}return;}
+  if(ItemPickupConfirmed()){Stop(L"Предметы добавлены в инвентарь. Подтверждены ID, количество и подбор с земли.");return;}
+  if(state.stage==NativeStage::Main)return;
   if(state.stage==NativeStage::PickupCount){
    uint32_t index=NumberAt(0x6EA934)+NumberAt(0x5E2C08),row[8]{};
    if(index<500&&Read(0x6EEDA8+32*index,row,sizeof(row))&&row[2]==g_itemId&&(int)row[1]==g_groundEntity)Step(22,now);
@@ -844,12 +879,13 @@ void Tick(){
   wchar_t key=keys[target%52];if(SendChecked(key))Step(22,now);return;
  }
  if(g_phase==22){
+  if(ItemPickupConfirmed()){Stop(L"Предметы добавлены в инвентарь. Подтверждены ID, количество и подбор с земли.");return;}
   if(state.stage==NativeStage::PickupCount){
    if(g_itemCount<=9){if(SendChecked(wchar_t(L'0'+g_itemCount)))g_due=now+250;}
    else if(SendChecked(L' '))Step(24,now);
    return;
   }
-  if(state.stage==NativeStage::Main){if(InventoryCount(g_itemName)>=g_inventoryBefore+g_itemCount)Stop(L"Предметы добавлены в инвентарь.");return;}
+  if(state.stage==NativeStage::Main)return;
   if(state.stage!=NativeStage::Pickup)return;
   uint32_t rows[500][8]{};if(!Read(0x6EEDA8,rows,sizeof(rows)))return;
   bool selected=false;for(const auto& row:rows)if(row[4]){
@@ -858,10 +894,8 @@ void Tick(){
   if(selected&&SendChecked(L' '))Step(23,now,15000);return;
  }
  if(g_phase==23){
-  if(state.stage!=NativeStage::Main)return;
-  int count=InventoryCount(g_itemName);
-  if(count>=g_inventoryBefore+g_itemCount){Log(g_itemLabel+L": было "+std::to_wstring(g_inventoryBefore)+L", стало "+std::to_wstring(count));Stop(L"Предметы добавлены в инвентарь.");}
-  else Stop(L"Подбор не подтверждён. Проверьте грузоподъёмность; предметы могут лежать под ногами.");
+  if(ItemPickupConfirmed()){Stop(L"Предметы добавлены в инвентарь. Подтверждены ID, количество и подбор с земли.");return;}
+  if(state.stage==NativeStage::Main)Stop(L"Подбор не подтверждён. Проверьте грузоподъёмность; предметы могут лежать под ногами.");
  }
  if(g_phase==24){TypeChecked(state,NativeStage::PickupCountText,std::to_string(g_itemCount),22,now);return;}
 }

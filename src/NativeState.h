@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 // SHA-locked3.89.1. Optional skill-counter write requires an explicit writer handle
 // and a proven live skill-allocation input frame, while the thread is suspended.
 enum class NativeStage { Unknown, Main, Minus, LetterJ, Command, DebugText,
                          Npc, QuestQuestion, ItemName, ItemQuantity, Pickup,
-                         PickupCount, PickupCountText, DayCount, Course, CourseReward, SkillAllocation };
-struct NativeState { uintptr_t skillFrame=0;int skillPoints=-1;bool skillWriteAttempted=false,skillWriteOkay=false;NativeStage stage=NativeStage::Unknown; uintptr_t debugFrame=0;uint32_t debugCall=0,readerCall=0,hookReturns=0;
+                         PickupCount, PickupCountText, DayCount, Course, CourseReward, SkillAllocation, AnimalTarget, AnimalSpecies };
+struct NativeState { uint32_t animalX=0,animalY=0;bool animalCursor=false;uintptr_t animalFrame=0;uint32_t animalReturn=0;uintptr_t skillFrame=0;int skillPoints=-1;bool skillWriteAttempted=false,skillWriteOkay=false;NativeStage stage=NativeStage::Unknown; uintptr_t debugFrame=0;uint32_t debugCall=0,readerCall=0,hookReturns=0;
                      std::vector<uint32_t> returns; };
 NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
  NativeState out;uintptr_t provenDebugFrame=0;bool readerConflict=false,courseReward=false,skillReader=false;HANDLE thread=OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,FALSE,g_thread);
@@ -70,6 +70,24 @@ NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
           out.skillFrame=allocationFrame;skillReader=true;
          }
         }
+        // setnpc: prove the live input reader -> modal -> debug frame chain.
+        // The modal security cookie prevents matching stale return-shaped stack data.
+        if(caller==0x50F71E||caller==0x4F7DD9){
+         uint32_t modal=0,modalReturn=0,debug=0,debugReturn=0,secret=0,modalCookie=0;
+         bool text=caller==0x50F71E;
+         if(ReadRaw(readerFrame,&modal,4)&&modal>readerFrame&&modal-readerFrame<0x2000&&
+            ReadRaw(modal+4,&modalReturn,4)&&NativeReturn(native,modal+4,modalReturn)==g_base+(text?0x1754C7:0x1754A8)&&
+            ReadRaw(modal,&debug,4)&&debug>modal&&debug-modal<0x40000&&
+            ReadRaw(debug+4,&debugReturn,4)&&NativeReturn(native,debug+4,debugReturn)==g_base+0x17D735&&
+            Read(0x5E200C,&secret,4)){
+          uintptr_t cookieBase=text?modal:((modal&~uintptr_t(63))-0xB4);
+          uintptr_t cookieSlot=text?modal-4:cookieBase+0xB0;
+          if(ReadRaw(cookieSlot,&modalCookie,4)&&modalCookie==(secret^(uint32_t)cookieBase)){
+           out.animalFrame=debug;out.animalReturn=text?0x5754C7:0x5754A8;
+           if(!text){uint32_t x=0,y=0;out.animalCursor=ReadRaw(cookieBase+0x14,&out.animalX,4)&&ReadRaw(cookieBase+0x20,&out.animalY,4)&&Read(0x2785454,&x,4)&&Read(0x2D86894,&y,4)&&x==out.animalX&&y==out.animalY;}
+          }
+         }
+        }
         if(caller>=0x56FE50&&caller<0x57CC80&&ReadRaw(readerFrame,&parent,4)){
          uint32_t ret=0;if(parent>readerFrame&&ReadRaw(parent+4,&ret,4)&&NativeReturn(native,parent+4,ret)==g_base+0x17D735)provenDebugFrame=parent;
         }
@@ -87,8 +105,9 @@ NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
     }
    page=end;
   }
-  if(readerConflict){out.readerCall=0;provenDebugFrame=0;skillReader=false;out.skillFrame=0;}
+  if(readerConflict){out.animalFrame=0;out.animalReturn=0;out.readerCall=0;provenDebugFrame=0;skillReader=false;out.skillFrame=0;}
   if(provenDebugFrame)out.debugFrame=provenDebugFrame;
+  if(out.animalFrame&&!readerConflict)out.debugFrame=out.animalFrame;
   auto has=[&](uint32_t va){return std::find(out.returns.begin(),out.returns.end(),va)!=out.returns.end();};
   if(out.debugFrame){
    uint32_t call=0;uintptr_t slot=(out.debugFrame&~uintptr_t(15))-0x21CD4;
@@ -100,6 +119,8 @@ NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
      case 0x56FE67:if(out.readerCall==call)out.stage=NativeStage::LetterJ;break;
      case 0x56FE79:if(out.readerCall==call)out.stage=NativeStage::Command;break;
      case 0x56FEA2:out.stage=NativeStage::DebugText;break;
+     case 0x5754A8:if(out.animalFrame==out.debugFrame&&out.animalReturn==call)out.stage=NativeStage::AnimalTarget;break;
+     case 0x5754C7:if(out.animalFrame==out.debugFrame&&out.animalReturn==call)out.stage=NativeStage::AnimalSpecies;break;
      case 0x57708A:out.stage=NativeStage::Npc;break;
      case 0x57B607:out.stage=NativeStage::ItemName;break;
      case 0x57B569:out.stage=NativeStage::DayCount;break;
