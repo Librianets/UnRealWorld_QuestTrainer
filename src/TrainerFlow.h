@@ -5,6 +5,7 @@ struct ItemEntry {uint32_t id;std::string name;std::wstring label;unsigned categ
 itemcatalogue::Record g_itemRecord{};
 std::vector<ItemEntry> g_items;
 int g_inventoryBeforeExact=-1;
+int g_inventoryBeforeEquivalent=-1;
 int g_inventoryBefore=0;uint32_t g_groundBefore=0;int g_groundEntity=-1;int g_created=0;
 std::vector<uint16_t> g_groundCounts;
 std::string Lower(std::string s){for(char& ch:s)if(ch>='A'&&ch<='Z')ch+=32;return s;}
@@ -27,6 +28,20 @@ static int InventoryIdCount(uint32_t id){
  uint32_t ids[100]{},counts[100]{};
  if(!Read(0xA72ACD0,ids,sizeof(ids))||!Read(0xA72AE60,counts,sizeof(counts)))return -1;
  uint64_t total=0;for(unsigned i=0;i<100;++i)if(ids[i]==id)total+=counts[i];
+ return total>0x7fffffff?-1:(int)total;
+}
+static int InventoryEquivalentCount(){
+ uint32_t ids[100]{},counts[100]{};
+ if(!Read(0xA72ACD0,ids,sizeof(ids))||!Read(0xA72AE60,counts,sizeof(counts)))return -1;
+ uint64_t total=0;
+ for(unsigned i=0;i<100;++i)if(ids[i]){
+  // Dynamic inputs keep their exact identity. Only base inputs are interned.
+  if(ids[i]==g_itemId){total+=counts[i];continue;}
+  if(g_itemId>=50000||ids[i]<50000)continue;
+  auto at=itemcatalogue::Address(ids[i]);itemcatalogue::Record record{};
+  if(!at||!Read(at,record.data(),record.size()))return -1;
+  if(itemcatalogue::PickupEquivalent(g_itemRecord,record))total+=counts[i];
+ }
  return total>0x7fffffff?-1:(int)total;
 }
 static std::wstring Utf8Label(const std::string& s){
@@ -447,6 +462,7 @@ static bool ItemSearchMatches(const ItemEntry& item,const std::wstring& query){
  std::wistringstream tokens(q);std::wstring token;while(tokens>>token)if(hay.find(token)==std::wstring::npos)return false;return true;
 }
 static int CompareItems(const ItemEntry& a,const ItemEntry& b,int column){
+ if(column==4&&itemcatalogue::Quality(a.record)!=itemcatalogue::Quality(b.record))return itemcatalogue::Quality(a.record)<itemcatalogue::Quality(b.record)?-1:1;
  if(column==3)return a.id<b.id?-1:a.id>b.id?1:0;
  if(column==0&&a.category!=b.category)return a.category<b.category?-1:1;
  auto x=column==2?Wide(a.name):Utf8Label(ItemRussian(a.name));auto y=column==2?Wide(b.name):Utf8Label(ItemRussian(b.name));
@@ -460,7 +476,7 @@ static const ItemEntry* BrowserSelection(){if(!g_itemList)return nullptr;int row
 static void ItemSelectionChanged(){if(g_itemFilling)return;auto* item=BrowserSelection();
  EnableWindow(g_add,item&&!g_busy);if(!item)return;
  int n=(int)SendMessageW(g_item,CB_GETCOUNT,0,0);for(int i=0;i<n;++i)if((uint32_t)SendMessageW(g_item,CB_GETITEMDATA,i,0)==item->id){SendMessageW(g_item,CB_SETCURSEL,i,0);break;}
- std::wstring hint=item->label+L" — "+ItemCategory(item->category)+L"; ID "+std::to_wstring(item->id)+(item->id>=50000?L". Вариант текущего мира: сохранены материал и свойства.":L". Базовый предмет: качество и свойства базового образца.");SetWindowTextW(g_itemInfo,hint.c_str());
+ std::wstring hint=item->label+L" — "+ItemCategory(item->category)+L"; ID "+std::to_wstring(item->id)+L"; качество: "+itemcatalogue::QualityLabel(itemcatalogue::Quality(item->record))+(item->id>=50000?L". Копия варианта из мира; материал, износ и свойства сохраняются.":L". Качество и свойства базового образца.");SetWindowTextW(g_itemInfo,hint.c_str());
 }
 void RefreshItemBrowser(bool types){if(!IsWindow(g_itemWindow))return;g_itemFilling=true;uint32_t selected=0;if(auto* old=BrowserSelection())selected=old->id;
  int ix=(int)SendMessageW(g_itemType,CB_GETCURSEL,0,0);int filter=ix<0?-1:(int)SendMessageW(g_itemType,CB_GETITEMDATA,ix,0);
@@ -470,12 +486,14 @@ void RefreshItemBrowser(bool types){if(!IsWindow(g_itemWindow))return;g_itemFill
   ix=(int)SendMessageW(g_itemType,CB_GETCURSEL,0,0);filter=(int)SendMessageW(g_itemType,CB_GETITEMDATA,ix,0);
  }
  wchar_t query[256]{};GetWindowTextW(g_itemSearch,query,256);std::vector<const ItemEntry*> visible;
- for(const auto& item:g_items)if((filter<0||item.category==(unsigned)filter)&&ItemSearchMatches(item,query))visible.push_back(&item);
+ int quality=(int)SendMessageW(g_itemQuality,CB_GETCURSEL,0,0);if(quality<0)quality=0;
+ for(const auto& item:g_items)if((filter<0||item.category==(unsigned)filter)&&(!quality||itemcatalogue::Quality(item.record)==unsigned(quality))&&ItemSearchMatches(item,query))visible.push_back(&item);
  std::sort(visible.begin(),visible.end(),[](const ItemEntry* a,const ItemEntry* b){int cmp=CompareItems(*a,*b,g_itemSort);return g_itemDescending?cmp>0:cmp<0;});
  SendMessageW(g_itemList,WM_SETREDRAW,FALSE,0);ListView_DeleteAllItems(g_itemList);int choose=-1;
  for(auto* item:visible){std::wstring cat=ItemCategory(item->category),ru=Utf8Label(ItemRussian(item->name)),en=Wide(item->name),id=std::to_wstring(item->id);if(ru.empty())ru=L"—";
+  std::wstring qualityText=itemcatalogue::QualityLabel(itemcatalogue::Quality(item->record));
   LVITEMW v{};v.mask=LVIF_TEXT|LVIF_PARAM;v.iItem=(int)ListView_GetItemCount(g_itemList);v.pszText=cat.data();v.lParam=item->id;int row=ListView_InsertItem(g_itemList,&v);
-  ListView_SetItemText(g_itemList,row,1,ru.data());ListView_SetItemText(g_itemList,row,2,en.data());ListView_SetItemText(g_itemList,row,3,id.data());if(selected==item->id)choose=row;
+  ListView_SetItemText(g_itemList,row,1,ru.data());ListView_SetItemText(g_itemList,row,2,en.data());ListView_SetItemText(g_itemList,row,3,id.data());ListView_SetItemText(g_itemList,row,4,qualityText.data());if(selected==item->id)choose=row;
  }
  if(choose<0&&!visible.empty())choose=0;if(choose>=0)ListView_SetItemState(g_itemList,choose,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
  SendMessageW(g_itemList,WM_SETREDRAW,TRUE,0);InvalidateRect(g_itemList,nullptr,TRUE);g_itemFilling=false;
@@ -487,26 +505,30 @@ void Begin(bool native,bool item,bool days);
 static LRESULT CALLBACK ItemWindowProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){switch(msg){
  case WM_COMMAND:
   if(LOWORD(w)==101&&HIWORD(w)==EN_CHANGE)RefreshItemBrowser();
-  if(LOWORD(w)==102&&HIWORD(w)==CBN_SELCHANGE)RefreshItemBrowser();
+  if((LOWORD(w)==102||LOWORD(w)==106)&&HIWORD(w)==CBN_SELCHANGE)RefreshItemBrowser();
   if(LOWORD(w)==20&&!g_busy){ItemSelectionChanged();if(BrowserSelection())Begin(false,true,false);}
   if(LOWORD(w)==21&&!g_busy&&SelectGame())LoadItems();return 0;
  case WM_NOTIFY:{auto* n=(NMHDR*)l;if(n->hwndFrom==g_itemList){if(n->code==LVN_ITEMCHANGED)ItemSelectionChanged();if(n->code==LVN_COLUMNCLICK){int col=((NMLISTVIEW*)l)->iSubItem;if(g_itemSort==col)g_itemDescending=!g_itemDescending;else{g_itemSort=col;g_itemDescending=false;}RefreshItemBrowser();}}return 0;}
  case WM_CLOSE:if(g_busy){ShowWindow(hwnd,SW_HIDE);return 0;}DestroyWindow(hwnd);return 0;
- case WM_DESTROY:g_itemWindow=g_itemSearch=g_itemType=g_itemList=g_itemInfo=g_item=g_quantity=g_add=nullptr;return 0;
+ case WM_DESTROY:g_itemWindow=g_itemSearch=g_itemType=g_itemQuality=g_itemList=g_itemInfo=g_item=g_quantity=g_add=nullptr;return 0;
  }return DefWindowProcW(hwnd,msg,w,l);}
 void OpenItemWindow(){if(IsWindow(g_itemWindow)){ShowWindow(g_itemWindow,SW_SHOWNORMAL);SetForegroundWindow(g_itemWindow);return;}if(g_busy)return;
  WNDCLASSW c{};c.lpfnWndProc=ItemWindowProc;c.hInstance=GetModuleHandleW(nullptr);c.lpszClassName=L"URWItemBrowser";c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassW(&c);
  g_itemWindow=CreateWindowExW(0,c.lpszClassName,L"Предметы — русский / English",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,80,80,1040,710,g_window,nullptr,c.hInstance,nullptr);
  auto add=[&](const wchar_t* cls,const wchar_t* title,DWORD style,int x,int y,int width,int height,int id){HWND h=CreateWindowExW(!wcscmp(cls,L"EDIT")?WS_EX_CLIENTEDGE:0,cls,title,WS_CHILD|WS_VISIBLE|style,x,y,width,height,g_itemWindow,(HMENU)(INT_PTR)id,c.hInstance,nullptr);SendMessageW(h,WM_SETFONT,(WPARAM)GetStockObject(DEFAULT_GUI_FONT),TRUE);return h;};
  add(L"STATIC",L"Поиск: русское / английское название или ID",0,12,12,450,20,100);
- g_itemSearch=add(L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP,12,36,600,26,101);SendMessageW(g_itemSearch,EM_SETLIMITTEXT,250,0);
- g_itemType=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,628,36,380,400,102);
+ g_itemSearch=add(L"EDIT",L"",ES_AUTOHSCROLL|WS_TABSTOP,12,36,470,26,101);SendMessageW(g_itemSearch,EM_SETLIMITTEXT,250,0);
+ g_itemType=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,494,36,265,400,102);
+ g_itemQuality=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,770,36,238,200,106);
+ SendMessageW(g_itemQuality,CB_ADDSTRING,0,(LPARAM)L"Качество: любое");
+ for(unsigned q=1;q<=5;++q)SendMessageW(g_itemQuality,CB_ADDSTRING,0,(LPARAM)itemcatalogue::QualityLabel(q));
+ SendMessageW(g_itemQuality,CB_SETCURSEL,0,0);
  g_itemList=add(WC_LISTVIEWW,L"",LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS|WS_TABSTOP,12,78,996,450,103);ListView_SetExtendedListViewStyle(g_itemList,LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER|LVS_EX_GRIDLINES);
- const wchar_t* titles[]={L"Тип ↑↓",L"Русское название ↑↓",L"English ↑↓",L"ID ↑↓"};int widths[]={190,360,360,65};for(int i=0;i<4;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=(wchar_t*)titles[i];col.cx=widths[i];ListView_InsertColumn(g_itemList,i,&col);}
+ const wchar_t* titles[]={L"Тип ↑↓",L"Русское название ↑↓",L"English ↑↓",L"ID ↑↓",L"Качество ↑↓"};int widths[]={160,290,290,75,155};for(int i=0;i<5;++i){LVCOLUMNW col{};col.mask=LVCF_TEXT|LVCF_WIDTH;col.pszText=(wchar_t*)titles[i];col.cx=widths[i];ListView_InsertColumn(g_itemList,i,&col);}
  g_itemInfo=add(L"STATIC",L"",0,12,540,995,42,104);
  add(L"STATIC",L"Количество (1–100):",0,12,596,165,22,18);g_quantity=add(L"EDIT",L"1",ES_NUMBER|WS_TABSTOP,180,591,80,28,19);SendMessageW(g_quantity,EM_SETLIMITTEXT,3,0);
  g_add=add(L"BUTTON",L"Добавить в инвентарь",WS_TABSTOP,280,588,320,34,20);add(L"BUTTON",L"Обновить список из игры",WS_TABSTOP,620,588,388,34,21);
- add(L"STATIC",L"Поиск: мех / fur, шкура / skin, нить / yarn. Варианты из мира сохраняют материал и свойства.",0,12,635,996,25,105);
+ add(L"STATIC",L"Качество выбирается из готовых вариантов. Если список пуст, такого варианта в текущем мире нет.",0,12,635,996,25,105);
  g_item=add(L"COMBOBOX",L"",CBS_DROPDOWNLIST,0,0,1,1,17);ShowWindow(g_item,SW_HIDE);
  if(!g_browserTest&&SelectGame())LoadItems();else RefreshItemBrowser(true);
  ShowWindow(g_itemWindow,SW_SHOWNORMAL);SetForegroundWindow(g_itemWindow);SetFocus(g_itemSearch);
@@ -523,13 +545,14 @@ bool GroundCounts(std::vector<uint16_t>& counts){
 static bool ItemPickupConfirmed(){
  // A lone item can be picked up immediately; the next reader may be a message,
  // not Main. Confirm committed inventory+ground deltas without sending input.
- if(g_created!=g_itemCount||g_inventoryBeforeExact<0)return false;
- if(InventoryIdCount(g_itemId)!=g_inventoryBeforeExact+g_itemCount)return false;
+ if(g_created!=g_itemCount||g_inventoryBeforeEquivalent<0)return false;
+ int after=InventoryEquivalentCount();
+ if(after!=g_inventoryBeforeEquivalent+g_itemCount)return false;
  std::vector<uint16_t> ground;if(!GroundCounts(ground))return false;
  uint64_t total=0;for(auto n:ground)total+=n;
- return itemcatalogue::PickupCommitted(g_inventoryBeforeExact,InventoryIdCount(g_itemId),g_groundBefore,total,g_created,g_itemCount);
+ return itemcatalogue::PickupCommitted(g_inventoryBeforeEquivalent,after,g_groundBefore,total,g_created,g_itemCount);
 }
-void Step(int phase,ULONGLONG now,int timeout=6000){g_phase=phase;g_due=now+160;g_stepDeadline=now+timeout;}
+void Step(int phase,ULONGLONG now,int timeout=6000){g_phase=phase;g_due=now+(g_itemMode?35:160);g_stepDeadline=now+timeout;}
 bool SendChecked(wchar_t key){if(SendKey(key))return true;Stop(L"Не удалось передать клавишу. Дальнейший ввод остановлен.");return false;}
 bool TypeChecked(const NativeState& state,NativeStage expected,const std::string& value,int next,ULONGLONG now){
  if(state.stage!=expected)return false;
@@ -539,7 +562,7 @@ bool TypeChecked(const NativeState& state,NativeStage expected,const std::string
  wchar_t ch=g_typedIndex<value.size()?(unsigned char)value[g_typedIndex]:L'\r';
  if(!SendChecked(ch))return false;
  if(ch==L'\r'){g_typed.clear();g_typedIndex=0;Step(next,now,next==1?120000:15000);}
- else{++g_typedIndex;g_due=now+200;g_stepDeadline=now+6000;}
+ else{++g_typedIndex;g_due=now+(g_itemMode?35:200);g_stepDeadline=now+6000;}
  return true;
 }
 // F5 course adapter: only reads task definitions/state and sends native keys.
@@ -771,6 +794,9 @@ void Begin(bool native,bool item=false,bool days=false){
  g_courseBusy=false;
  if(TextAt(kPlayer,32).empty()){Log(L"Сначала загрузите живого персонажа.");return;}
  auto state=ProbeNative();
+ // The SDL event pump briefly has no proven input frame. Retry only Unknown;
+ // a real menu/dialogue must still reject the request without sending keys.
+ for(unsigned retry=0;item&&state.stage==NativeStage::Unknown&&retry<12;++retry){Sleep(20);state=ProbeNative();}
  if(state.stage!=NativeStage::Main){Log(L"Нужен основной игровой экран. Закройте меню/диалоги и повторите. Ввод не отправлен.");return;}
  if(TextAt(0xA72B055,32)==TextAt(0x58F6F8,32)){Log(L"Нужна локальная карта: нажмите Enter в игре.");return;}
  int choice=(int)SendMessageW(g_choices,CB_GETCURSEL,0,0);int type=(int)SendMessageW(g_choices,CB_GETITEMDATA,choice,0);
@@ -794,12 +820,14 @@ void Begin(bool native,bool item=false,bool days=false){
   if(!ItemRecordCurrent(entry->id,entry->record)){Log(L"Предмет изменился с момента чтения списка. Обновите список и выберите его снова. Ввод не отправлен.");return;}
   g_itemId=entry->id;g_itemName=entry->name;g_itemLabel=entry->label;g_itemRecord=entry->record;
   // Native key y takes the exact prototype ID, avoiding the substring-name factory.
-  g_inventoryBefore=InventoryCount(g_itemName);g_inventoryBeforeExact=InventoryIdCount(g_itemId);
-  if(g_inventoryBefore<0||g_inventoryBeforeExact<0||!GroundCounts(g_groundCounts)){Log(L"Не удалось прочитать инвентарь/предметы.");return;}
+  g_inventoryBefore=InventoryCount(g_itemName);g_inventoryBeforeExact=InventoryIdCount(g_itemId);g_inventoryBeforeEquivalent=InventoryEquivalentCount();
+  if(g_inventoryBefore<0||g_inventoryBeforeExact<0||g_inventoryBeforeEquivalent<0||!GroundCounts(g_groundCounts)){Log(L"Не удалось прочитать инвентарь/предметы.");return;}
   g_groundBefore=0;for(auto n:g_groundCounts)g_groundBefore+=n;
  }
  if(!EnsureGameForeground()){Log(L"Не удалось переключиться на игру после коротких повторов. Ввод не отправлен.");return;}
- if(ProbeNative().stage!=NativeStage::Main){Log(L"Состояние игры изменилось при переключении окна. Ввод не отправлен.");return;}
+ auto focused=ProbeNative();
+ for(unsigned retry=0;item&&focused.stage==NativeStage::Unknown&&retry<12;++retry){Sleep(20);focused=ProbeNative();}
+ if(focused.stage!=NativeStage::Main){Log(L"Состояние игры изменилось при переключении окна. Ввод не отправлен.");return;}
  g_previousLayout=GetKeyboardLayout(g_thread);g_english=LoadKeyboardLayoutW(L"00000409",0);DWORD_PTR ignored=0;
  if(!g_english||!SendMessageTimeoutW(g_game,WM_INPUTLANGCHANGEREQUEST,0,(LPARAM)g_english,SMTO_ABORTIFHUNG,500,&ignored)){LayoutBack();Log(L"Не удалось включить английскую раскладку.");return;}
  g_type=native?0:type;g_plan.Reset(type);g_before=NumberAt(kCounter);g_phase=0;g_hadFirst=false;g_busy=true;

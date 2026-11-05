@@ -21,6 +21,26 @@ inline bool Decode(uint32_t id,const Record& r,std::string& name,unsigned& categ
 }
 inline std::string Lower(std::string text){for(auto& c:text)if(c>='A'&&c<='Z')c+=32;return text;}
 inline bool SameRecord(uint32_t id,const Record& expected,const Record& actual){std::string n;unsigned c=0;return expected==actual&&Decode(id,actual,n,c);}
+// Native3.89.1 quality: byte165 low3 bits; zero means ordinary level3.
+// Renderer451770 omits this property for plants, carcasses and special kinds55/69.
+inline unsigned Quality(const Record& r){
+ uint32_t kind=0;memcpy(&kind,r.data()+4,4);
+ if(!Category(r[0])||r[0]==11||r[0]==12||kind==55||kind==69)return 0;
+ unsigned q=r[165]&7;return q==0?3:q<=5?q:0;
+}
+inline const wchar_t* QualityLabel(unsigned q){switch(q){
+ case 1:return L"1 — низкое";case 2:return L"2 — пониженное";case 3:return L"3 — обычное";
+ case 4:return L"4 — высокое";case 5:return L"5 — высшее";default:return L"—";}}
+// Pickup44C6DA..44C70C interns a base prototype via4C0AC0. Its ID can change.
+// Do not use the item name as identity. Allow only identical bytes, except the
+// native default quality encodings0/0x80/0x83, which comparator4C0230 equates.
+inline bool PickupEquivalent(const Record& expected,const Record& actual){
+ for(size_t i=0;i<kRecordSize;++i){
+  if(expected[i]==actual[i])continue;
+  auto ordinary=[](unsigned v){return v==0||v==0x80||v==0x83;};
+  if(i!=165||!ordinary(expected[i])||!ordinary(actual[i]))return false;
+ }return true;
+}
 inline bool PickupCommitted(int before,int after,uint64_t groundBefore,uint64_t groundAfter,int created,int requested){
  return before>=0&&after>=0&&requested>=1&&requested<=100&&created==requested&&
         uint64_t(after)==uint64_t(before)+unsigned(requested)&&groundAfter==groundBefore;
