@@ -4,7 +4,7 @@
 enum class NativeStage { Unknown, Main, Minus, LetterJ, Command, DebugText,
                          Npc, QuestQuestion, ItemName, ItemQuantity, Pickup,
                          PickupCount, PickupCountText, DayCount, Course, CourseReward, SkillAllocation, AnimalTarget, AnimalSpecies };
-struct NativeState { uint32_t animalX=0,animalY=0;bool animalCursor=false;uintptr_t animalFrame=0;uint32_t animalReturn=0;uintptr_t skillFrame=0;int skillPoints=-1;bool skillWriteAttempted=false,skillWriteOkay=false;NativeStage stage=NativeStage::Unknown; uintptr_t debugFrame=0;uint32_t debugCall=0,readerCall=0,hookReturns=0;
+struct NativeState { uintptr_t chatFrame=0; uint32_t animalX=0,animalY=0;bool animalCursor=false;uintptr_t animalFrame=0;uint32_t animalReturn=0;uintptr_t skillFrame=0;int skillPoints=-1;bool skillWriteAttempted=false,skillWriteOkay=false;NativeStage stage=NativeStage::Unknown; uintptr_t debugFrame=0;uint32_t debugCall=0,readerCall=0,hookReturns=0;
                      std::vector<uint32_t> returns; };
 NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
  NativeState out;uintptr_t provenDebugFrame=0;bool readerConflict=false,courseReward=false,skillReader=false;HANDLE thread=OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT|THREAD_QUERY_INFORMATION,FALSE,g_thread);
@@ -58,6 +58,11 @@ NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
         if(out.readerCall&&out.readerCall!=caller)readerConflict=true;
         out.readerCall=caller;
         if(caller==0x4D12B4){
+         uint32_t menu=0,ret=0,chat=0,secret=0,chatCookie=0;
+         if(ReadRaw(readerFrame,&menu,4)&&menu>readerFrame&&menu-readerFrame<0x2000&&
+            ReadRaw(menu+4,&ret,4)&&NativeReturn(native,menu+4,ret)==g_base+0x1427FA&&
+            ReadRaw(menu,&chat,4)&&chat>menu&&chat-menu<0x10000&&
+            Read(0x5E200C,&secret,4)&&ReadRaw(chat-4,&chatCookie,4)&&chatCookie==(secret^chat))out.chatFrame=chat;
          uint32_t menuFrame=0,menuCaller=0,allocationFrame=0,allocationCaller=0;
          uint32_t allocationCookieAt=0,allocationSecret=0,menuCookie=0,allocationCookie=0;
          if(ReadRaw(readerFrame,&menuFrame,4)&&menuFrame>readerFrame&&menuFrame-readerFrame<0x2000&&
@@ -105,7 +110,7 @@ NativeState ProbeNative(HANDLE skillWriter=nullptr,int freezeTarget=0){
     }
    page=end;
   }
-  if(readerConflict){out.animalFrame=0;out.animalReturn=0;out.readerCall=0;provenDebugFrame=0;skillReader=false;out.skillFrame=0;}
+  if(readerConflict){out.chatFrame=0;out.animalFrame=0;out.animalReturn=0;out.readerCall=0;provenDebugFrame=0;skillReader=false;out.skillFrame=0;}
   if(provenDebugFrame)out.debugFrame=provenDebugFrame;
   if(out.animalFrame&&!readerConflict)out.debugFrame=out.animalFrame;
   auto has=[&](uint32_t va){return std::find(out.returns.begin(),out.returns.end(),va)!=out.returns.end();};

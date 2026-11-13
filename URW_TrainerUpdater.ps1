@@ -1,15 +1,17 @@
-﻿param([string]$CurrentVersion='0.26',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
+﻿param([string]$CurrentVersion='0.27',[string]$TrainerPath='', [int]$TrainerPid=0, [switch]$LibraryOnly)
 $ErrorActionPreference='Stop'
 $script:TrainerRepository='Librianets/UnRealWorld_QuestTrainer'
 $script:CompactFiles=@('URW_QuestTrainer.exe','URW_TrainerUpdater.ps1','README.txt','CODE_LICENSE.txt','build.cmd','src/QuestTrainer.cpp','src/QuestPlan.h','src/NativeState.h','src/TrainerFlow.h','src/HookState.h')
 $script:LegacyFullSourceFiles=@($script:CompactFiles)+@('src/CharacterState.h','src/CharacterWindows.h','src/ItemCatalogue.h','src/TimeAdvance.h')
-$script:FullSourceFiles=@($script:LegacyFullSourceFiles)+@('src/AnimalPolicy.h','src/AnimalSpawn.h')
+$script:PreviousFullSourceFiles=@($script:LegacyFullSourceFiles)+@('src/AnimalPolicy.h','src/AnimalSpawn.h')
+$script:FullSourceFiles=@($script:PreviousFullSourceFiles)+@('src/QuestComplete.h')
 function Get-TrainerExpectedFiles($Manifest){
  # The10-file compact source layout lets the original015/016 updater install017.
- # Accept the historical14-file layout and the new16-file split source layout.
+ # Accept historical 14/16-file layouts and the current 17-file split layout.
  $count=@($Manifest.files.psobject.Properties.Name).Count
  if($count -eq $script:CompactFiles.Count){return $script:CompactFiles}
  if($count -eq $script:LegacyFullSourceFiles.Count){return $script:LegacyFullSourceFiles}
+ if($count -eq $script:PreviousFullSourceFiles.Count){return $script:PreviousFullSourceFiles}
  if($count -eq $script:FullSourceFiles.Count){return $script:FullSourceFiles}
  throw 'Incomplete update file list.'
 }

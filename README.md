@@ -1,11 +1,9 @@
-# URW Quest Trainer 0.26
+# URW Quest Trainer 0.27
 
-For UnReal World 3.89.1 on Windows; compatible with Player and Plus Hook 0.46. Russian interface.
+For UnReal World 3.89.1 on Windows. Compatible with Player and Plus Hook 0.48 and previous supported builds. Russian interface.
 
-New buttons prepare all 30 skills at 100%, all 11 attributes/personality values at 18 without changing height or weight, or a normal condition with wounds and ailments healed. Review the plan and click Apply. Native restrictions remain: maximum attributes require 30 days of character age and all skills at 100% require 100 days. Age is never changed automatically.
+Adds native quest completion for testing final dialogue. Open a conversation with the giver of an accepted quest, press the completion button, close the conversation and speak to the same NPC again. Quest requirements are skipped; the game handles completion and rewards. Continue reward windows and replies manually. This does not exercise all earlier quest dialogue; see the [Russian instructions](README_RU.md).
 
-Download **URW_QuestTrainer_0.26.zip** from [Releases](https://github.com/Librianets/UnRealWorld_QuestTrainer/releases/latest), extract separately from the game and run **URW_QuestTrainer.exe**. Existing installations can use the trainer's update button.
+Download URW_QuestTrainer_0.27.zip from [Releases](https://github.com/Librianets/UnRealWorld_QuestTrainer/releases/latest), extract separately from the game and run URW_QuestTrainer.exe. Existing users can use the update button. Character editing, item delivery, animals and other tools remain available.
 
-Item delivery, existing item quality variants, quests, character editing, animals and time controls remain available. See [Russian instructions](README_RU.md) for details.
-
-The standard archive keeps the compact source layout supported by previous updaters. The optional fullsource archive has separate headers and the same executable. Build with Visual Studio 2022, x86, build.cmd.
+The standard archive retains the compact layout compatible with previous updaters. The optional fullsource archive has separate headers and the same executable. Build with Visual Studio 2022, x86, build.cmd.
